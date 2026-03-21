@@ -1,0 +1,84 @@
+{
+  "provider": null,
+  "base_url": null,
+  "model": null,
+  "db_path": "picolo.db",
+  "tools_dir": "tools",
+  "session_id": "default",
+  "max_input_tokens": 200000,
+  "max_tool_iterations": 50,
+  "llm_timeout_seconds": 120,
+  "shell_timeout_seconds": 60,
+  "web_fetch_timeout_seconds": 30,
+  "email_smtp_timeout_seconds": 10,
+  "email_imap_default_limit": 10,
+  "pip_install_timeout_seconds": 180,
+  "log_file": "picolo.log",
+  "log_max_size": 5242880,
+  "log_backup_count": 3,
+  "system_prompt": "You are Picolo, a helpful AI assistant. Use the shell tool sparingly and only for user-requested tasks. Be concise and accurate.",
+  "telegram_token": "",
+  "telegram_allowed_users": [""],
+  "discord_token": "",
+  "discord_allowed_users": [""],
+  "email": {
+    "smtp_server": "",
+    "smtp_port": 587,
+    "username": "",
+    "password": "",
+    "imap_server": "",
+    "imap_port": 993,
+    "imap_use_ssl": true
+  },
+  "providers": [
+    {
+      "id": "nvidia",
+      "name": "NVIDIA",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "models": ["stepfun-ai/step-3.5-flash", "stepfun-ai/step-3.5-turbo", "stepfun-ai/step-3.1-max"],
+      "api_key": ""
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key": "",
+      "models": ["claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-latest"]
+    },
+    {
+      "id": "google",
+      "name": "Google",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "api_key": "",
+      "models": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+    },
+    {
+      "id": "groq",
+      "name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "",
+      "models": ["llama-3.1-8b", "llama-3.1-70b", "llama-3.2-11b", "gemma2-9b", "mixtral-8x7b"]
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "",
+      "models": ["openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-001"]
+    },
+    {
+      "id": "custom",
+      "name": "Custom",
+      "base_url": "",
+      "api_key": "",
+      "models": []
+    }
+  ]
+}

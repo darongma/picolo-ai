@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Picolo – AI Assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+</head>
+<body>
+  <div class="app-container">
+    <header class="header">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <h1>Picolo</h1>
+        <button id="clear-chat-btn" class="clear-chat-btn" title="Start a new conversation">New Chat</button>
+        <span id="session-id-display" title="Current session ID" style="font-size:0.85rem; color:var(--text); opacity:0.7;"></span>
+      </div>
+      <div style="display:flex; align-items:center; gap:4px;">
+        <span style="font-size:0.85rem; opacity:0.85;">Built with ❤️ by <a href="https://www.darongma.com" target="_blank" rel="noopener" style="color:inherit; text-decoration:underline;">Darong Ma</a></span>
+        <button id="config-toggle" class="btn-icon" title="Settings">⚙️</button>
+        <button id="logs-toggle" class="btn-icon" title="Logs">📋</button>
+        <button id="theme-toggle" class="btn-icon" title="Toggle theme">🌓</button>
+      </div>
+    </header>
+
+    <div class="main-content">
+      <div class="chat-panel" id="chat-panel">
+        
+        <div class="messages" id="messages">
+          <!-- Welcome message -->
+          <div class="message assistant">
+            <div>Hello! I'm Picolo, your AI assistant. I can help with office documents, web pages, file operations, and more. How can I assist you today?</div>
+          </div>
+        </div>
+        <!-- Typing indicator (hidden by default) -->
+        <div class="typing-indicator" id="typing-indicator" style="display:none; margin: 0 24px 16px; align-self: flex-start;">
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+          <div class="typing-dot"></div>
+          <!-- Status bar (shows progress, timer, cancel) -->
+        <div class="status-bar hidden" id="status-bar">
+          <span id="status-icon">⏳</span>
+          <span id="status-text">Ready</span>
+          <span id="status-timer"></span>
+          <button id="status-cancel" class="status-cancel-btn">Cancel</button>
+        </div>
+        </div>
+        <div class="input-area">
+          <textarea id="user-input" rows="3" placeholder="Type a message…" autocomplete="off"></textarea>
+          <button id="send-btn">
+            <span>Send</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </div>
+      </div>
+
+      <aside class="config-panel" id="config-panel" hidden>
+        <h2>⚙️ Settings</h2>
+        <form id="config-form">
+          <div class="form-group">
+            <label for="provider">Provider</label>
+            <div style="display:flex; gap:8px; align-items:flex-end;">
+              <select id="provider" name="provider" style="flex:1;">
+                <!-- Options populated from providers -->
+              </select>
+              <button type="button" id="delete-provider-btn" class="btn-secondary" title="Delete selected provider">🗑️</button>
+            </div>
+            <div class="provider-management" style="margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg); display:none;" id="provider-edit-section">
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:8px; color:var(--primary);">Edit Provider</div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-name-edit">Name</label>
+                <input type="text" id="provider-name-edit" placeholder="Provider name">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-base-url-edit">Base URL</label>
+                <input type="text" id="provider-base-url-edit" placeholder="https://api.example.com/v1">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-models-edit">Models (comma-separated)</label>
+                <input type="text" id="provider-models-edit" placeholder="model-1, model-2, model-3">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-api-key-edit">API Key</label>
+                <input type="text" id="provider-api-key-edit" placeholder="Provider API key">
+              </div>
+              <div id="provider-edit-status" class="status" style="padding:0;"></div>
+            </div>
+            <div class="provider-management" style="margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:var(--radius-sm); background:var(--bg); display:none;" id="provider-add-section">
+              <div style="font-size:0.85rem; font-weight:600; margin-bottom:8px; color:var(--primary);">Add New Provider</div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-name-add">Name</label>
+                <input type="text" id="provider-name-add" placeholder="Provider name">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-id-add">ID (lowercase, alphanumeric)</label>
+                <input type="text" id="provider-id-add" placeholder="unique-id">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-base-url-add">Base URL</label>
+                <input type="text" id="provider-base-url-add" placeholder="https://api.example.com/v1">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-models-add">Models (comma-separated)</label>
+                <input type="text" id="provider-models-add" placeholder="model-1, model-2, model-3">
+              </div>
+              <div class="form-group" style="padding:0; margin-bottom:8px;">
+                <label for="provider-api-key-add">API Key</label>
+                <input type="text" id="provider-api-key-add" placeholder="Provider API key">
+              </div>
+              <button type="button" id="add-provider-confirm" class="btn-secondary" style="width:100%; margin-top:4px;">Add Provider</button>
+              <div id="provider-add-status" class="status" style="padding:0;"></div>
+            </div>
+            <button type="button" id="show-add-provider" class="btn-secondary" style="width:100%; margin-top:8px;">+ Add New Provider</button>
+          </div>
+          <div class="form-group">
+            <label for="model">Model</label>
+            <select id="model" name="model">
+              <!-- Options populated by JS based on provider -->
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="max-input-tokens">Max Input Tokens</label>
+            <input type="number" id="max-input-tokens" name="max_input_tokens" min="1000" max="1000000" step="1000" value="200000">
+            <small>Approximate maximum tokens to include in the prompt. Higher values keep longer memory but use more tokens.</small>
+          </div>
+          <div class="form-group">
+            <label for="system-prompt">System Prompt</label>
+            <textarea id="system-prompt" name="system_prompt" rows="5" placeholder="You are a helpful AI assistant..."></textarea>
+          </div>
+          <details>
+            <summary>Email Settings</summary>
+            <div class="form-group">
+              <label for="smtp-server">SMTP Server</label>
+              <input type="text" id="smtp-server" name="smtp_server" placeholder="smtp.gmail.com">
+            </div>
+            <div class="form-group">
+              <label for="smtp-port">SMTP Port</label>
+              <input type="number" id="smtp-port" name="smtp_port" value="587">
+            </div>
+            <div class="form-group">
+              <label for="email-username">Email Username</label>
+              <input type="text" id="email-username" name="email_username">
+            </div>
+            <div class="form-group">
+              <label for="email-password">Email Password</label>
+              <input type="password" id="email-password" name="email_password">
+            </div>
+            <div class="form-group">
+              <label for="imap-server">IMAP Server</label>
+              <input type="text" id="imap-server" name="imap_server" placeholder="imap.ionos.com">
+            </div>
+            <div class="form-group">
+              <label for="imap-port">IMAP Port</label>
+              <input type="number" id="imap-port" name="imap_port" value="993">
+            </div>
+            <div class="form-group checkbox-inline">
+              <label for="imap-use-ssl">IMAP Use SSL/TLS</label>
+              <input type="checkbox" id="imap-use-ssl" name="imap_use_ssl" checked>
+            </div>
+          </details>
+          <details>
+            <summary>Telegram Bot Settings</summary>
+            <div class="form-group">
+              <label for="telegram-token">Bot Token (from @BotFather)</label>
+              <input type="text" id="telegram-token" name="telegram_token" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+            </div>
+            <div class="form-group">
+              <label for="telegram-allowed-users">Allowed User IDs (comma-separated, optional)</label>
+              <input type="text" id="telegram-allowed-users" name="telegram_allowed_users" placeholder="12345678,87654321">
+              <small>Leave empty to allow all users. Get your user ID from @userinfobot.</small>
+            </div>
+          </details>
+          <details>
+            <summary>Discord Bot Settings</summary>
+            <div class="form-group">
+              <label for="discord-token">Bot Token (from Discord Developer Portal)</label>
+              <input type="text" id="discord-token" name="discord_token" placeholder="MTExMTExMTExMTExMTExMTEx.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX">
+            </div>
+            <div class="form-group">
+              <label for="discord-allowed-users">Allowed User IDs (comma-separated, optional)</label>
+              <input type="text" id="discord-allowed-users" name="discord_allowed_users" placeholder="123456789012345678,987654321098765432">
+              <small>Leave empty to allow all users. Find your user ID in Discord settings (Developer Mode).</small>
+            </div>
+          </details>
+          <button type="submit" class="btn-primary">Save Settings</button>
+        </form>
+        <div id="config-status" class="status"></div>
+      </aside>
+
+      <aside class="config-panel" id="logs-panel" hidden>
+        <h2>📋 Logs</h2>
+        <div id="log-status" class="status" style="padding: 0 24px 8px;">Last 7 lines • Auto-refresh every 60s</div>
+        <pre id="log-content" style="flex:1; overflow:auto; padding:12px 24px; margin:0; background:var(--bg); color:var(--text); font-family:monospace; font-size:0.85rem; line-height:1.4; white-space:pre-wrap; word-break:break-all;"></pre>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
