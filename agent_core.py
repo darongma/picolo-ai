@@ -277,7 +277,7 @@ class Agent:
         self.memory = Memory(self.config["db_path"])
         self.tools_dir = self.config["tools_dir"]
         self.tools_dict = load_tools(self.tools_dir)
-        self._add_internal_tools()
+        
         self.openai_tools = build_openai_tools(self.tools_dict) if self.tools_dict else None
 
         # Determine active provider configuration
@@ -348,7 +348,7 @@ class Agent:
     def reload_tools(self):
         with self.lock:
             self.tools_dict = load_tools(self.config["tools_dir"])
-            self._add_internal_tools()
+            
             self.openai_tools = build_openai_tools(self.tools_dict) if self.tools_dict else None
 
     def save_config(self, updates: dict):
@@ -726,155 +726,6 @@ class Agent:
                     })
             return d
         return obj
-
-    def _add_internal_tools(self):
-        """Add built‑in tools that enable self‑extension."""
-        # pip_install: install Python packages
-        def pip_install(package: str, upgrade: bool = False) -> str:
-            import subprocess
-            import sys
-            args = [sys.executable, "-m", "pip", "install"]
-            if upgrade:
-                args.append("--upgrade")
-            args.append(package)
-            try:
-                result = subprocess.run(
-                    args,
-                    capture_output=True,
-                    text=True,
-                    timeout=self.config.get('pip_install_timeout_seconds', 120)
-                )
-                return (
-                    f"exit code: {result.returncode}\n"
-                    f"stdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}"
-                )
-            except subprocess.TimeoutExpired:
-                return "Error: pip install timed out after 120 seconds"
-            except Exception as e:
-                return f"Error: {e}"
-
-        # reload_tools: reload tool modules from disk
-        def reload_tools() -> str:
-            self.reload_tools()
-            return f"Reloaded tools: {', '.join(self.tools_dict.keys())}"
-
-        # shell_run: execute a shell command
-        def shell_run(command: str, timeout: int = None) -> str:
-            import subprocess
-            if timeout is None:
-                timeout = self.config.get('shell_timeout_seconds', 30)
-            try:
-                result = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout
-                )
-                return (
-                    f"exit code: {result.returncode}\n"
-                    f"stdout:\n{result.stdout}\n"
-                    f"stderr:\n{result.stderr}"
-                )
-            except subprocess.TimeoutExpired:
-                return "Error: command timed out"
-            except Exception as e:
-                return f"Error: {e}"
-
-        # get_tools_dir: return the absolute path to the tools directory
-        def get_tools_dir() -> str:
-            return self.tools_dir
-
-        # get_workdir: return current working directory
-        def get_workdir() -> str:
-            import os
-            return os.getcwd()
-
-        # Define specs (OpenAI function calling format)
-        internal_specs = [
-            {
-                "name": "pip_install",
-                "description": "Install a Python package using pip. Use this to add new dependencies for custom tools. Example: {'name': 'pip_install', 'arguments': {'package': 'requests'}}",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "package": {
-                            "type": "string",
-                            "description": "Package name, e.g., 'requests' or 'numpy~=1.24'"
-                        },
-                        "upgrade": {
-                            "type": "boolean",
-                            "description": "If true, upgrade the package if already installed"
-                        }
-                    },
-                    "required": ["package"]
-                }
-            },
-            {
-                "name": "reload_tools",
-                "description": "Reload all tools from the tools directory. Call this after creating new tool files or modifying existing ones to make them available.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "shell_run",
-                "description": "Execute a shell command and return stdout+stderr. Use with caution; can modify the system. Timeout defaults to 30 seconds.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute"
-                        },
-                        "timeout": {
-                            "type": "number",
-                            "description": "Timeout in seconds (default 30)"
-                        }
-                    },
-                    "required": ["command"]
-                }
-            },
-            {
-                "name": "get_tools_dir",
-                "description": "Return the absolute path to the tools directory where custom tools are stored. Use this to know where to place new tool files.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            },
-            {
-                "name": "get_workdir",
-                "description": "Return the current working directory of the agent process. Useful for constructing file paths.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-        ]
-
-        # Add each to tools_dict if not already present (allow override)
-        for spec in internal_specs:
-            name = spec["name"]
-            if name == "pip_install":
-                run_fn = pip_install
-            elif name == "reload_tools":
-                run_fn = reload_tools
-            elif name == "shell_run":
-                run_fn = shell_run
-            elif name == "get_tools_dir":
-                run_fn = get_tools_dir
-            elif name == "get_workdir":
-                run_fn = get_workdir
-            else:
-                continue
-            if name not in self.tools_dict:
-                self.tools_dict[name] = {"spec": spec, "run": run_fn}
 
     def get_recent_logs(self, limit: int = 200) -> List[str]:
         """Return the last N log lines from the in-memory buffer."""
