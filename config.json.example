@@ -14,6 +14,7 @@
   "email_smtp_timeout_seconds": 10,
   "email_imap_default_limit": 10,
   "pip_install_timeout_seconds": 180,
+  "log":false,
   "log_file": "picolo.log",
   "log_max_size": 5242880,
   "log_backup_count": 3,

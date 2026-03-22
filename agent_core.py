@@ -271,6 +271,9 @@ class Agent:
 
     def _setup_logger(self):
         """Configure rotating file logger for this Agent."""
+        if not self.config.get("log", True):
+            self.logger = None
+            return
         # Remove existing handlers if reconfiguring
         if self.logger:
             for h in list(self.logger.handlers):
@@ -298,6 +301,11 @@ class Agent:
         self._setup_logger()
         # In-memory log buffer for fast UI access
         self.recent_logs = deque(maxlen=1000)
+        # Per-session Gemini content cache: preserves thought_signatures across turns
+        # within a single process lifetime (keyed by session_id).
+        # Intentionally NOT reset on reload_config so live sessions survive reconfiguration.
+        if not hasattr(self, "_gemini_contents_cache"):
+            self._gemini_contents_cache: Dict[str, list] = {}
         self.memory = Memory(self.config["db_path"])
         self.tools_dir = self.config["tools_dir"]
         self.tools_dict = load_tools(self.tools_dir)
@@ -404,6 +412,7 @@ class Agent:
         with self.lock:
             sid = session_id or self.session_id
             self.memory.clear_history(sid)
+            self._gemini_contents_cache.pop(sid, None)
             self._log("History cleared", {"session_id": sid})
 
 
@@ -448,7 +457,6 @@ class Agent:
         # ── Phase 2: agent loop (lock released during LLM calls) ──
         max_iterations = self.config.get('max_tool_iterations', 25)
         final_response = None
-        gemini_contents = None
         # Per-tool error counter for retry loop prevention
         tool_error_counts = {}
         max_tool_errors = self.config.get('max_tool_errors', 3)
@@ -464,15 +472,19 @@ class Agent:
                     from google.genai import types as _gt
                     import json as _json, uuid as _uuid
 
-                    if gemini_contents is None:
+                    # Pull from in-memory cache so thought_signatures survive across turns.
+                    # Cache miss (new session or post-restart) falls through to rebuild from DB.
+                    gemini_contents = self._gemini_contents_cache.get(sid)
+                    cache_was_cold = gemini_contents is None
+
+                    if cache_was_cold:
                         gemini_contents = []
-                        system_instruction = None
                         skip_tool_ids = set()  # track tool_call_ids to skip if assistant was skipped
 
                         for m in messages:
                             role = m["role"]
                             if role == "system":
-                                system_instruction = m["content"]
+                                # Already captured via self.system_prompt above
                                 continue
 
                             elif role == "user":
@@ -509,6 +521,13 @@ class Agent:
                                         )
                                     )]
                                 ))
+                    else:
+                        # Cache hit: history + prior tool turns are already in gemini_contents
+                        # with thought_signatures intact. Only the new user message is missing.
+                        gemini_contents.append(_gt.Content(
+                            role="user",
+                            parts=[_gt.Part(text=message or "")]
+                        ))
 
 
                     gemini_tools = None
@@ -523,7 +542,7 @@ class Agent:
                         gemini_tools = [_gt.Tool(function_declarations=fn_decls)]
 
                     gemini_config = _gt.GenerateContentConfig(
-                        system_instruction=system_instruction if iteration == 0 else None,
+                        system_instruction=self.system_prompt or None,
                         tools=gemini_tools,
                         automatic_function_calling=_gt.AutomaticFunctionCallingConfig(disable=True),
                     )
@@ -535,6 +554,8 @@ class Agent:
                     )
                     raw_model_content = gemini_response.candidates[0].content
                     gemini_contents.append(raw_model_content)
+                    # Persist updated contents (with thought_signatures) back to cache
+                    self._gemini_contents_cache[sid] = gemini_contents
 
                     class _TC:
                         def __init__(self, id_, name, args_str):
@@ -782,6 +803,8 @@ class Agent:
 
     def _log(self, event: str, extra: dict = None):
         """Write a log line to the rotating file logger and in-memory buffer."""
+        if not self.config.get("log", True):
+            return
         try:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             line = f"[{timestamp}] {event}"
