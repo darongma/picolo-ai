@@ -83,11 +83,11 @@ function renderMessage(msg) {
 
     const header = document.createElement('div');
     header.className = 'tool-header';
-    header.textContent = `Tool Call: ${toolName}`;
+    header.textContent = `🛠️ Tool Call Results: 🔨 ${toolName}`;
     header.title = "Click to expand/collapse";
     toolDiv.appendChild(header);
 
-    const body = document.createElement('div');
+    const body = document.createElement('pre');
     body.className = 'tool-body';
     body.textContent = msg.content || '';
     toolDiv.appendChild(body);
@@ -166,7 +166,7 @@ function renderMessage(msg) {
     toolDiv.style.fontSize = '0.85rem';
     toolDiv.style.marginTop = '4px';
     toolDiv.style.opacity = '0.9';
-    toolDiv.textContent = `⚙️ Using: ${toolNames}`;
+    toolDiv.textContent = ` 💻 ${toolNames} ${msg.tool_calls?.[0]?.function?.arguments.substring(0,77) ?? ""} ...`;
     div.appendChild(toolDiv);
   }
 
@@ -586,63 +586,187 @@ async function sendMessage() {
     container.appendChild(userDiv);
     scrollToBottom();
 
-    const res = await fetch('/api/chat', {
+    // ── SSE streaming via /api/chat/stream ──────────────────────────────
+    const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: content, session_id: sessionId }),
       signal: abortController.signal
     });
 
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(err.detail || 'Unknown error');
+    }
+
+    const usedTools = new Set();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let sseBuffer = '';
+    let currentEventType = '';
+
+    // ── Live assistant bubble (created on first 'thinking', updated in-place) ──
+    // We build the bubble DOM once and mutate its contentDiv so the user sees
+    // content appear without the bubble jumping around.
+    let liveBubble = null;      // the outer .message.assistant div
+    let liveContent = null;     // the .message-content div inside it
+    let liveToolList = null;    // the ⚙️ tool indicator div inside it
+    let liveCopyBtn = null;     // the copy button (wired up after typewriter)
+
+    function ensureLiveBubble() {
+      if (liveBubble) return;
+      // Count existing chat messages to get the right message number
+      const prevChatCount = Array.from(container.children).filter(el => {
+        const cls = el.className || '';
+        return (cls.includes('user') || cls.includes('assistant')) && !cls.includes('welcome');
+      }).length;
+      const messageNumber = prevChatCount + 1;
+      const timeStr = formatTimestamp(new Date().toISOString().replace('T', ' ').slice(0, 19));
+
+      liveBubble = document.createElement('div');
+      liveBubble.className = 'message assistant';
+
+      const header = document.createElement('div');
+      header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
+
+      const left = document.createElement('span');
+      left.style.cssText = 'font-size:0.8rem;color:var(--text-light);opacity:0.8;';
+      left.textContent = `#${messageNumber} ${timeStr}`;
+      header.appendChild(left);
+
+      liveCopyBtn = document.createElement('button');
+      liveCopyBtn.className = 'copy-btn';
+      liveCopyBtn.title = 'Copy';
+      liveCopyBtn.innerHTML = '📋';
+      header.appendChild(liveCopyBtn);
+
+      liveBubble.appendChild(header);
+
+      liveContent = document.createElement('div');
+      liveContent.className = 'message-content';
+      liveContent.textContent = '…';
+      liveBubble.appendChild(liveContent);
+
+      container.appendChild(liveBubble);
+      scrollToBottom();
+    }
+
+    // Typewriter: writes `text` into `el` at ~30 chars/tick, resolves when done.
+    function typewrite(el, text) {
+      return new Promise(resolve => {
+        el.textContent = '';
+        if (!text) { resolve(); return; }
+        const CHUNK = 8;   // chars per tick — fast enough to feel instant on long responses
+        let pos = 0;
+        function tick() {
+          pos = Math.min(pos + CHUNK, text.length);
+          el.textContent = text.slice(0, pos);
+          scrollToBottom();
+          if (pos < text.length) requestAnimationFrame(tick);
+          else resolve();
+        }
+        requestAnimationFrame(tick);
+      });
+    }
+
+    counter="";
+    // Drain the SSE stream
+    outer: while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      sseBuffer += decoder.decode(value, { stream: true });
+      const lines = sseBuffer.split('\n');
+      sseBuffer = lines.pop(); // keep last incomplete line
+
+      
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          currentEventType = line.slice(6).trim();
+        } else if (line.startsWith('data:')) {
+          let event;
+          try { event = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          now=new Date().toLocaleString();
+          if (currentEventType === 'thinking') {
+            // First sign of life — create the live bubble with a spinner
+            ensureLiveBubble();
+            liveContent.innerHTML = `<p>🧠 ${agentConfig.model} Thinking… 💡 (step ${event.iteration} @ ${now})</p>`;
+            counter=event.iteration;
+            scrollToBottom();
+            
+          } else if (currentEventType === 'tool_call') {
+            // Show the tool being called inside the live bubble
+            ensureLiveBubble();
+          
+            if (!liveToolList) {
+              liveToolList = document.createElement('div');
+              liveToolList.className = 'message tool-call';
+              liveToolList.style.cssText = 'font-size:0.85rem;margin-top:4px;opacity:0.9;';
+              liveBubble.appendChild(liveToolList);
+            }
+            liveToolList.innerHTML += `<p>${counter}. ⚡ ${event.tool} @ ${now} : ${event.args.substring(10,77)} ...</p>`;
+            scrollToBottom();
+
+          } else if (currentEventType === 'tool_result') {
+            // Render the collapsed tool result bubble immediately, then reset liveContent
+            ensureLiveBubble();
+            liveToolList.innerHTML += `<p>${counter}. 💾 ${event.tool} finished @ ${now} : ... ${event.result.slice(-77)}</p>`;
+            scrollToBottom();
+            
+          } else if (currentEventType === 'final') {
+            // Typewrite the final answer into the live bubble
+            ensureLiveBubble();
+
+            // Remove the ⚙️ tool list from the bubble — renderMessage will re-add it
+            // properly from history. We only need to typewrite the text content.
+            if (liveToolList) { liveToolList.remove(); liveToolList = null; }
+
+            // Divergence guard — same logic as original /api/chat check
+            const msgs = event.history || [];
+            const lastEntry = msgs[msgs.length - 1];
+            if (event.content && lastEntry?.content !== event.content) {
+              const formatted = new Date().toISOString().replace('T', ' ').slice(0, 19);
+              msgs.push({ role: 'assistant', content: '⛔ ' + event.content, timestamp: formatted });
+            }
+
+            
+
+            // Typewrite the final text into the live bubble
+            // await typewrite(liveContent, event.content || '');
+
+            // Now replace the live bubble with the properly-rendered history messages.
+            // This gives us the correct tool_calls indicator, copy button wiring, etc.
+            liveBubble.remove();
+            liveBubble = null; liveContent = null; liveCopyBtn = null;
+            msgs.forEach(renderMessage);
+
+            if (event.tokens) {
+              now = new Date().toLocaleString();
+              document.getElementById("user-input").placeholder =
+                `Type a message… \r\n\r\n${agentConfig.provider} 🤖 ${agentConfig.model} completed with 💰 ${event.tokens} tokens in 🕒 ${Math.round((Date.now() - statusStartTime) / 1000)}s on 📆${now}`;
+            }
+            scrollToBottom();
+
+          } else if (currentEventType === 'error') {
+            ensureLiveBubble();
+            liveContent.textContent = `❌ Error: ${event.content}`;
+
+          } else if (currentEventType === 'done') {
+            break outer;
+          }
+          currentEventType = '';
+        }
+      }
+    }
+
     const elapsed = (Date.now() - statusStartTime) / 1000;
-    stopStatus('Done', elapsed);
+    let finalMsg = 'Done';
+    if (usedTools.size > 0) finalMsg += ` (${Array.from(usedTools).join(', ')})`;
+    stopStatus(finalMsg, elapsed);
     setTyping(false);
     abortController = null;
     $('status-cancel').disabled = false;
     $('status-cancel').textContent = 'Cancel';
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'Unknown error');
-    }
-
-    const data = await res.json();
-    
-    // Use Optional Chaining (?.) to keep the code clean and crash-proof
-if (data.history?.length > 0 && data.response) {
-  const lastEntry = data.history[data.history.length - 1];
-  
-  // Ensure we are comparing the right field (content vs response)
-  if (data.response !== lastEntry.content) {
-    const now = Date.now();
-    const formatted = new Date(now).toISOString().replace('T', ' ').slice(0, 19);
-    data.history.push({
-      role: "assistant",
-      content: "⛔ " + data.response,
-      timestamp: formatted
-    });
-  }
-}
-    
-    /*
-    const beforeCount = container.children.length;
-    const newHistory = data.history.slice(beforeCount);
-    */
-
-    const newHistory = data.history;
-    const usedTools = new Set();
-    newHistory.forEach(msg => {
-      if (msg.role === 'assistant' && msg.tool_calls) {
-        msg.tool_calls.forEach(tc => usedTools.add(tc.function.name));
-      }
-    });
-
-    now=new Date().toLocaleString();
-    document.getElementById("user-input").placeholder="Type a message… \r\n\r\n"+agentConfig.provider+" 🤖 "+agentConfig.model+" completed your last request with 💰 "+data.tokens+" tokens in 🕒 "+Math.round(elapsed)+" seconds on 📆"+now;
-    
-    let finalMsg = 'Done';
-    if (usedTools.size > 0) finalMsg += ` (${Array.from(usedTools).join(', ')})`;
-    stopStatus(finalMsg, elapsed);
-    newHistory.forEach(renderMessage);
     scrollToBottom();
 
   } catch (e) {

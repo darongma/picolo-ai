@@ -8,6 +8,8 @@ config.json
 *.log.*
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 .vscode/
 .idea/
 memory/

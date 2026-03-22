@@ -7,6 +7,7 @@
   "session_id": "default",
   "max_input_tokens": 200000,
   "max_tool_iterations": 50,
+  "max_tool_errors":2,
   "llm_timeout_seconds": 120,
   "shell_timeout_seconds": 60,
   "web_fetch_timeout_seconds": 30,

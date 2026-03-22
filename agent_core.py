@@ -49,11 +49,30 @@ CREATE INDEX IF NOT EXISTS idx_session_id ON messages(session_id, id);
 """
 
 class Memory:
+    """Thread-safe SQLite memory store.
+
+    Each calling thread gets its own sqlite3 connection via threading.local().
+    This avoids "database is locked" errors from concurrent writes while
+    keeping all sessions in a single on-disk database file.
+    """
+
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.executescript(DB_SCHEMA)
-        self.conn.commit()
+        self._local = threading.local()
+        # Initialise schema using a temporary connection on the main thread
+        conn = sqlite3.connect(db_path)
+        conn.executescript(DB_SCHEMA)
+        conn.commit()
+        conn.close()
+
+    def _conn(self) -> sqlite3.Connection:
+        """Return (or create) the sqlite3 connection for the current thread."""
+        if not getattr(self._local, "conn", None):
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")   # concurrent readers + writer
+            conn.execute("PRAGMA busy_timeout=5000")  # wait up to 5 s on lock
+            self._local.conn = conn
+        return self._local.conn
 
     def add_message(
         self,
@@ -64,7 +83,8 @@ class Memory:
         tool_call_id: str = None,
         tool_name: str = None
     ) -> str:
-        self.conn.execute(
+        conn = self._conn()
+        conn.execute(
             """
             INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, tool_name)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -78,20 +98,21 @@ class Memory:
                 tool_name
             )
         )
-        self.conn.commit()
+        conn.commit()
         # Fetch the timestamp of the inserted row (CURRENT_TIMESTAMP)
-        cur = self.conn.execute("SELECT datetime(timestamp, 'localtime') as timestamp FROM messages WHERE rowid = last_insert_rowid()")
+        cur = conn.execute("SELECT datetime(timestamp, 'localtime') as timestamp FROM messages WHERE rowid = last_insert_rowid()")
         row = cur.fetchone()
         timestamp = row[0] if row else None
         return timestamp
 
     def clear_history(self, session_id: str):
         """Delete all messages for a given session."""
-        self.conn.execute(
+        conn = self._conn()
+        conn.execute(
             "DELETE FROM messages WHERE session_id = ?",
             (session_id,)
         )
-        self.conn.commit()
+        conn.commit()
 
     def _estimate_message_tokens(self, msg: dict) -> int:
         """Rough token estimation: ~1 token per 4 chars of content + function calls."""
@@ -112,7 +133,7 @@ class Memory:
         """Fetch messages for session, returning the most recent ones that fit within max_tokens."""
         # Fetch a large number of recent messages (newest first)
         # We assume 10000 is enough to fill any reasonable token budget
-        cur = self.conn.execute(
+        cur = self._conn().execute(
             """
             SELECT role, content, tool_calls, tool_call_id, tool_name, datetime(timestamp, 'localtime') as timestamp
             FROM messages
@@ -161,7 +182,10 @@ class Memory:
         return selected
 
     def close(self):
-        self.conn.close()
+        conn = getattr(self._local, "conn", None)
+        if conn:
+            conn.close()
+            self._local.conn = None
 
 
 # ==================== Tool Loading ====================
@@ -385,7 +409,7 @@ class Agent:
 
 
 
-    def chat(self, message: str, session_id: str = None, return_history: bool = False):
+    def chat(self, message: str, session_id: str = None, return_history: bool = False, step_callback=None):
         # ── Phase 1: persist user message & build context (needs lock) ──
         with self.lock:
             new_msgs = []
@@ -431,6 +455,8 @@ class Agent:
 
         for iteration in range(max_iterations):
             self._log("LLM request", {"iteration": iteration + 1, "model": self.model, "messages": messages})
+            if step_callback:
+                step_callback({"type": "thinking", "iteration": iteration + 1})
 
             # ── LLM call (no lock held) ──────────────────────────────────
             if self.use_gemini_sdk and self.gemini_client:
@@ -608,6 +634,12 @@ class Agent:
                             tool_error_counts[tool_name] = tool_error_counts.get(tool_name, 0) + 1
 
                         if result is None:
+                            if step_callback:
+                                step_callback({
+                                    "type": "tool_call",
+                                    "tool": tool_name,
+                                    "args": tc.function.arguments
+                                })
                             if tool_name in self.tools_dict:
                                 try:
                                     result = self.tools_dict[tool_name]["run"](**args)
@@ -624,11 +656,20 @@ class Agent:
                                 tool_error_counts[tool_name] = max_tool_errors
                                 abort_loop = True
 
+                    if step_callback:
+                        step_callback({
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "args": tc.function.arguments,
+                            "result": str(result)
+                        })
+
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": str(result),
-                        "name": tool_name
+                        "name": tool_name,
+                        "args": tc.function.arguments
                     }
 
                     with self.lock:
@@ -687,6 +728,12 @@ class Agent:
             clean_messages = self._sanitize_for_log(messages)
         else:
             clean_messages = self._sanitize_for_log(new_msgs)
+
+        # Fire the final step_callback here, after clean_messages is ready,
+        # so the SSE stream can include the new messages and the frontend
+        # never needs to re-fetch history.
+        if step_callback:
+            step_callback({"type": "final", "content": final_response, "history": clean_messages, "tokens": total})
 
         return final_response, total, clean_messages
 
