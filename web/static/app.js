@@ -621,7 +621,7 @@ async function sendMessage() {
         return (cls.includes('user') || cls.includes('assistant')) && !cls.includes('welcome');
       }).length;
       const messageNumber = prevChatCount + 1;
-      const timeStr = formatTimestamp(new Date().toISOString().replace('T', ' ').slice(0, 19));
+      const timeStr = (new Date().toLocaleString().slice(0, 21));
 
       liveBubble = document.createElement('div');
       liveBubble.className = 'message assistant';
