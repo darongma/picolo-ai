@@ -56,13 +56,13 @@ def _format_progress(ev) -> str:
             preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
         except Exception:
             preview = ev.get("args", "")
+        preview=preview[:177]+"..."
         lines.append(f"⚡ `{tool}({preview})`")
     elif t == "tool_result":
         tool = ev.get("tool", "?")
         result = ev.get("result", "")
         # Truncate long results
-        if len(result) > 177:
-            result = result[:177] + "…"
+        result = result[:177] + "…"
         lines.append(f"💾 {result}")
     return "\n".join(lines) if lines else "⏳ Working…"
 
@@ -110,26 +110,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
             ev_type = event.get("type")
+            message_to_send = ""
 
-            if ev_type == "final":
+            if ev_type == "error":
+                err = event.get("content", "Unknown error")
+                message_to_send = f"❌ Error: {err}"
+                # We set message_to_send so it gets handled by the chunker below
+            
+            elif ev_type == "final":
                 final_text = event.get("content", "")
                 tokens = event.get("tokens")
                 token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
-                full_text = final_text + token_note
-                for i in range(0, len(full_text), 4096):
-                    await update.message.reply_text(full_text[i:i + 4096])
-                break
-
-            elif ev_type == "error":
-                err = event.get("content", "Unknown error")
-                await update.message.reply_text(f"❌ Error: {err}")
-                break
-
+                message_to_send = final_text + token_note
+                
             else:
-                new_text = _format_progress(event)
-                if new_text != last_progress_text:
-                    await update.message.reply_text(new_text)
-                    last_progress_text = new_text
+                # Progress updates
+                full_text = _format_progress(event)
+                if full_text != last_progress_text:
+                    last_progress_text = full_text
+                    message_to_send = full_text
+
+            # Only send if we actually have text (ignores duplicate progress)
+            if message_to_send:
+                for i in range(0, len(message_to_send), 4096):
+                    await update.message.reply_text(message_to_send[i:i + 4096])
+            
+            # If it was a final message or error, we are done draining
+            if ev_type in ["final", "error"]:
+                break
 
     await drain_queue()
 

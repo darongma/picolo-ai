@@ -68,11 +68,11 @@ def _format_progress(ev) -> str:
             preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
         except Exception:
             preview = ev.get("args", "")
+        preview=preview[:177]+"..."
         lines.append(f"⚡ `{tool}({preview})`")
     elif t == "tool_result":
         result = ev.get("result", "")
-        if len(result) > 177:
-            result = result[:177] + "…"
+        result = result[:177] + "…"
         lines.append(f"💾 {result}")
     return "\n".join(lines) if lines else "⏳ *Working…*"
 
@@ -157,22 +157,23 @@ async def on_message(message: discord.Message):
             final_text = event.get("content", "")
             tokens = event.get("tokens")
             token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
-            full_text = final_text + token_note
-            for i in range(0, len(full_text), 2000):
-                await message.reply(full_text[i:i + 2000])
-            break
-
+            msg_text = final_text + token_note
+           
         elif ev_type == "error":
             err = event.get("content", "Unknown error")
-            await message.reply(f"❌ Error: {err}")
-            break
-
+            msg_text=(f"❌ Error: {err}")
         else:
+            full_text = _format_progress(event)
+            if full_text != last_progress_text:
+                last_progress_text = full_text
+                msg_text=full_text
 
-            new_text = _format_progress(event)
-            if new_text != last_progress_text:
-                await message.reply(new_text)
-                last_progress_text = new_text
+        if msg_text:
+            for i in range(0, len(msg_text), 2000):
+                await message.reply(msg_text[i:i + 2000])
+
+        if ev_type in ["final", "error"]:
+            break
 
 
 def main():
