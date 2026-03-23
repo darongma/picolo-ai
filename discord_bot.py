@@ -56,29 +56,24 @@ async def get_agent():
     return agent
 
 
-def _format_progress(events: list[dict]) -> str:
-    """
-    Build a human-readable progress string from accumulated step events.
-    Keeps the running Discord message compact and readable.
-    """
+def _format_progress(ev) -> str:
     lines = []
-    for ev in events:
-        t = ev.get("type")
-        if t == "thinking":
-            lines.append(f"🤔 *Thinking… (iteration {ev.get('iteration', '?')})*")
-        elif t == "tool_call":
-            tool = ev.get("tool", "?")
-            try:
-                args = json.loads(ev.get("args", "{}"))
-                preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
-            except Exception:
-                preview = ev.get("args", "")
-            lines.append(f"🔧 `{tool}({preview})`")
-        elif t == "tool_result":
-            result = ev.get("result", "")
-            if len(result) > 177:
-                result = result[:177] + "…"
-            lines.append(f"   ↳ {result}")
+    t = ev.get("type")
+    if t == "thinking":
+        lines.append(f"🤔 *Thinking… (iteration {ev.get('iteration', '?')})*")
+    elif t == "tool_call":
+        tool = ev.get("tool", "?")
+        try:
+            args = json.loads(ev.get("args", "{}"))
+            preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
+        except Exception:
+            preview = ev.get("args", "")
+        lines.append(f"⚡ `{tool}({preview})`")
+    elif t == "tool_result":
+        result = ev.get("result", "")
+        if len(result) > 177:
+            result = result[:177] + "…"
+        lines.append(f"💾 {result}")
     return "\n".join(lines) if lines else "⏳ *Working…*"
 
 
@@ -143,7 +138,7 @@ async def on_message(message: discord.Message):
 
     await run_agent_async()
 
-    accumulated: list[dict] = []
+   
     last_progress_text = ""
 
     while True:
@@ -173,10 +168,8 @@ async def on_message(message: discord.Message):
             break
 
         else:
-            # thinking / tool_call / tool_result — plain text, no markdown,
-            # capped at 177 chars so a mid-entity slice never causes a bad request
-            accumulated.append(event)
-            new_text = _format_progress(accumulated)
+
+            new_text = _format_progress(event)
             if new_text != last_progress_text:
                 await message.reply(new_text)
                 last_progress_text = new_text

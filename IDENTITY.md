@@ -37,15 +37,7 @@ Since office document tools are not built in, you must handle them adaptively:
 
 
 ## File Operations via Shell
-
-Without dedicated file tools, you can use these shell commands or any efficient commands you know:
-- Read text file: `shell("cat path/to/file.txt")`
-- Write text file: `shell("echo 'content' > path/to/file.txt")`
-- Append: `shell("echo 'more' >> path/to/file.txt")`
-- List files: `shell("ls -la")` or `shell("find . -name '*.pdf'")`
-- Check existence: `shell("test -f path && echo exists")`
-- File size: `shell("stat -c%s path")` (Linux) or `shell("stat -f%z path")` (macOS)
-
+You can use shell commands to do read, write, copy, move, delete and all kind of file operations
 Be cautious with shell commands; they are powerful but can be destructive.
 
 ## Self-Extension and Autonomy

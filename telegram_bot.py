@@ -43,34 +43,28 @@ def init_agent():
     return agent
 
 
-def _format_progress(events: list[dict]) -> str:
-    """
-    Build a human-readable progress string from accumulated step events.
-    Each tool call/result pair is collapsed into a single line so the
-    message stays compact as it grows.
-    """
+def _format_progress(ev) -> str:
     lines = []
-    for ev in events:
-        t = ev.get("type")
-        if t == "thinking":
-            lines.append(f"🤔 Thinking… (iteration {ev.get('iteration', '?')})")
-        elif t == "tool_call":
-            tool = ev.get("tool", "?")
-            try:
-                args = json.loads(ev.get("args", "{}"))
-                # Show at most one key=value pair to keep it short
-                preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
-            except Exception:
-                preview = ev.get("args", "")
-            lines.append(f"🔧 `{tool}({preview})`")
-        elif t == "tool_result":
-            tool = ev.get("tool", "?")
-            result = ev.get("result", "")
-            # Truncate long results
-            if len(result) > 177:
-                result = result[:177] + "…"
-            lines.append(f"   ↳ {result}")
-    return "\n".join(lines) if lines else "⏳ _Working…_"
+    t = ev.get("type")
+    if t == "thinking":
+        lines.append(f"🤔 Thinking… (iteration {ev.get('iteration', '?')})")
+    elif t == "tool_call":
+        tool = ev.get("tool", "?")
+        try:
+            args = json.loads(ev.get("args", "{}"))
+            # Show at most one key=value pair to keep it short
+            preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
+        except Exception:
+            preview = ev.get("args", "")
+        lines.append(f"⚡ `{tool}({preview})`")
+    elif t == "tool_result":
+        tool = ev.get("tool", "?")
+        result = ev.get("result", "")
+        # Truncate long results
+        if len(result) > 177:
+            result = result[:177] + "…"
+        lines.append(f"💾 {result}")
+    return "\n".join(lines) if lines else "⏳ Working…"
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -101,7 +95,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread = threading.Thread(target=run_agent, daemon=True)
     thread.start()
 
-    accumulated: list[dict] = []
     last_progress_text = ""
 
     async def drain_queue():
@@ -133,10 +126,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
             else:
-                # thinking / tool_call / tool_result — send plain-text snippet (no parse_mode,
-                # so a mid-entity slice never causes a Bad Request)
-                accumulated.append(event)
-                new_text = _format_progress(accumulated)
+                new_text = _format_progress(event)
                 if new_text != last_progress_text:
                     await update.message.reply_text(new_text)
                     last_progress_text = new_text
