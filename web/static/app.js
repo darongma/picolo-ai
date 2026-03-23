@@ -611,6 +611,7 @@ async function sendMessage() {
     let liveBubble = null;      // the outer .message.assistant div
     let liveContent = null;     // the .message-content div inside it
     let liveToolList = null;    // the ⚙️ tool indicator div inside it
+    let liveReason=null;
     let liveCopyBtn = null;     // the copy button (wired up after typewriter)
 
     function ensureLiveBubble() {
@@ -646,6 +647,11 @@ async function sendMessage() {
       liveContent.className = 'message-content';
       liveContent.textContent = '…';
       liveBubble.appendChild(liveContent);
+
+      liveReason=document.createElement('div');
+      liveReason.className='message-content';
+      liveReason.textContent='...';
+      liveBubble.appendChild(liveReason);
 
       container.appendChild(liveBubble);
       scrollToBottom();
@@ -691,7 +697,16 @@ async function sendMessage() {
             // First sign of life — create the live bubble with a spinner
             ensureLiveBubble();
             liveContent.innerHTML = `<p>🧠 ${agentConfig.model} Thinking… 💡 (step ${event.iteration} @ ${now})</p>`;
+            liveContent._streamedText = '';   // reset streamed text for this turn
             counter=event.iteration;
+            scrollToBottom();
+            
+          } else if (currentEventType === 'text_delta') {
+            // Incremental text token from the LLM — append to live bubble
+            ensureLiveBubble();
+            if (!liveContent._streamedText) liveContent._streamedText = '';
+            liveContent._streamedText += event.content;
+            liveReason.textContent = liveContent._streamedText;
             scrollToBottom();
             
           } else if (currentEventType === 'tool_call') {
@@ -702,7 +717,7 @@ async function sendMessage() {
               liveToolList = document.createElement('div');
               liveToolList.className = 'message tool-call';
               liveToolList.style.cssText = 'font-size:0.85rem;margin-top:4px;opacity:0.9;';
-              liveBubble.appendChild(liveToolList);
+              liveContent.after(liveToolList);
             }
             liveToolList.innerHTML += `<p>${counter}. ⚡ ${event.tool} @ ${now} : ${event.args.substring(10,77)} ...</p>`;
             scrollToBottom();
@@ -714,28 +729,31 @@ async function sendMessage() {
             scrollToBottom();
             
           } else if (currentEventType === 'final') {
-            // Typewrite the final answer into the live bubble
+            // Finalize the live bubble — replace it with properly-rendered history
             ensureLiveBubble();
 
-            // Remove the ⚙️ tool list from the bubble — renderMessage will re-add it
-            // properly from history. We only need to typewrite the text content.
+            // Remove the tool list; renderMessage will re-add it from history.
             if (liveToolList) { liveToolList.remove(); liveToolList = null; }
+
+            // Sync correction: the streamed text may be missing a prefix that was
+            // inside a <think> block (e.g. the model wrote "I" inside <think> then
+            // continued outside it). final.content is the ground truth — update
+            // the live bubble immediately so the user sees the correct full text
+            // during the brief moment before we swap in the rendered history.
+            if (event.content && liveContent) {
+              liveContent.textContent = event.content;
+              scrollToBottom();
+            }
 
             // Divergence guard — same logic as original /api/chat check
             const msgs = event.history || [];
             const lastEntry = msgs[msgs.length - 1];
             if (event.content && lastEntry?.content !== event.content) {
               const formatted = new Date().toISOString().replace('T', ' ').slice(0, 19);
-              msgs.push({ role: 'assistant', content: '⛔ ' + event.content, timestamp: formatted });
+              msgs.push({ role: 'assistant', content: '\u26d4 ' + event.content, timestamp: formatted });
             }
 
-            
-
-            // Typewrite the final text into the live bubble
-            // await typewrite(liveContent, event.content || '');
-
-            // Now replace the live bubble with the properly-rendered history messages.
-            // This gives us the correct tool_calls indicator, copy button wiring, etc.
+            // Replace the live bubble with properly-rendered history messages.
             liveBubble.remove();
             liveBubble = null; liveContent = null; liveCopyBtn = null;
             msgs.forEach(renderMessage);
@@ -951,6 +969,7 @@ function setupEventListeners() {
       if (res.ok) {
         statusEl.textContent = '✓ Settings saved.';
         statusEl.className = 'status success';
+        agentConfig = await res.json();
         setTimeout(() => statusEl.textContent = '', 3000);
       } else {
         const err = await res.json();

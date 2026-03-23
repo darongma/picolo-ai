@@ -115,7 +115,7 @@ async def on_message(message: discord.Message):
 
     session_id = str(message.channel.id)
 
-    await message.reply("⏳ Working…")
+    status_msg = await message.reply("⏳ Working…")
 
     step_queue: queue.Queue = queue.Queue()
 
@@ -138,14 +138,37 @@ async def on_message(message: discord.Message):
 
     await run_agent_async()
 
-   
-    last_progress_text = ""
+    # Accumulated streamed text from text_delta events.
+    streamed_text = ""
+    last_edited_text = ""
+    EDIT_MIN_CHARS = 20    # minimum new chars before pushing an edit
+    EDIT_MAX_WAIT = 1.5    # seconds: force an edit even if threshold not met
+
+    last_edit_time = asyncio.get_event_loop().time()
+
+    async def _edit_status(new_text: str):
+        """Edit status_msg in-place, silently ignoring Discord errors."""
+        nonlocal last_edited_text, last_edit_time, status_msg
+        trimmed = new_text[:2000]
+        if trimmed == last_edited_text or status_msg is None:
+            return
+        try:
+            await status_msg.edit(content=trimmed)
+            last_edited_text = trimmed
+            last_edit_time = asyncio.get_event_loop().time()
+        except Exception:
+            pass  # e.g. rate-limited or message deleted — safe to ignore
 
     while True:
         try:
             event = step_queue.get_nowait()
         except queue.Empty:
-            await asyncio.sleep(0.3)
+            # Flush any pending streamed text that hasn't been pushed yet
+            if streamed_text and streamed_text != last_edited_text:
+                elapsed = asyncio.get_event_loop().time() - last_edit_time
+                if elapsed >= EDIT_MAX_WAIT:
+                    await _edit_status(streamed_text)
+            await asyncio.sleep(0.15)
             continue
 
         if event is None:
@@ -153,26 +176,45 @@ async def on_message(message: discord.Message):
 
         ev_type = event.get("type")
 
-        if ev_type == "final":
+        if ev_type == "text_delta":
+            streamed_text += event.get("content", "")
+            new_chars = len(streamed_text) - len(last_edited_text)
+            elapsed = asyncio.get_event_loop().time() - last_edit_time
+            if new_chars >= EDIT_MIN_CHARS or elapsed >= EDIT_MAX_WAIT:
+                await _edit_status(streamed_text)
+
+        elif ev_type == "thinking":
+            iteration = event.get("iteration", "?")
+            streamed_text = ""          # reset for new LLM turn
+            last_edited_text = ""
+            await _edit_status(f"🧠 Thinking… (step {iteration})")
+
+        elif ev_type in ("tool_call", "tool_result"):
+            await _edit_status(_format_progress(event))
+
+        elif ev_type == "final":
             final_text = event.get("content", "")
             tokens = event.get("tokens")
             token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
-            msg_text = final_text + token_note
-           
+            full_final = final_text + token_note
+
+            if len(full_final) <= 2000:
+                await _edit_status(full_final)
+            else:
+                # Too long to fit in one edit — delete status bubble and send chunks
+                try:
+                    if status_msg:
+                        await status_msg.delete()
+                        status_msg = None
+                except Exception:
+                    pass
+                for i in range(0, len(full_final), 2000):
+                    await message.reply(full_final[i:i + 2000])
+            break
+
         elif ev_type == "error":
             err = event.get("content", "Unknown error")
-            msg_text=(f"❌ Error: {err}")
-        else:
-            full_text = _format_progress(event)
-            if full_text != last_progress_text:
-                last_progress_text = full_text
-                msg_text=full_text
-
-        if msg_text:
-            for i in range(0, len(msg_text), 2000):
-                await message.reply(msg_text[i:i + 2000])
-
-        if ev_type in ["final", "error"]:
+            await _edit_status(f"❌ Error: {err}")
             break
 
 

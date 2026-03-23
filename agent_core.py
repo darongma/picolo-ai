@@ -523,11 +523,16 @@ class Agent:
                                 ))
                     else:
                         # Cache hit: history + prior tool turns are already in gemini_contents
-                        # with thought_signatures intact. Only the new user message is missing.
-                        gemini_contents.append(_gt.Content(
-                            role="user",
-                            parts=[_gt.Part(text=message or "")]
-                        ))
+                        # with thought_signatures intact. Only the new user message is missing —
+                        # and only on the FIRST iteration of this chat() call. On subsequent
+                        # iterations (after tool calls), the tool results have already been
+                        # appended to gemini_contents inline; re-appending the user message
+                        # would duplicate it and confuse the model.
+                        if iteration == 0:
+                            gemini_contents.append(_gt.Content(
+                                role="user",
+                                parts=[_gt.Part(text=message or "")]
+                            ))
 
 
                     gemini_tools = None
@@ -547,15 +552,35 @@ class Agent:
                         automatic_function_calling=_gt.AutomaticFunctionCallingConfig(disable=True),
                     )
                     self._log("Gemini request", {"iteration": iteration + 1, "contents_len": len(gemini_contents)})
+
+                    # Use generate_content (non-streaming) for the Gemini SDK path.
+                    # The google-genai SDK's streaming API does not reliably expose
+                    # function_calls across chunks, and thought_signatures are only
+                    # present on the complete response object. We call non-streaming
+                    # and emit text_delta events ourselves by splitting the response
+                    # text into sentences/chunks for a live-typing feel.
                     gemini_response = self.gemini_client.models.generate_content(
                         model=self.model,
                         contents=gemini_contents,
-                        config=gemini_config
+                        config=gemini_config,
                     )
                     raw_model_content = gemini_response.candidates[0].content
                     gemini_contents.append(raw_model_content)
-                    # Persist updated contents (with thought_signatures) back to cache
                     self._gemini_contents_cache[sid] = gemini_contents
+
+                    # Extract the visible text (skip thought parts).
+                    gemini_full_text = ""
+                    for part in (raw_model_content.parts or []):
+                        if not getattr(part, "thought", False) and getattr(part, "text", None):
+                            gemini_full_text += part.text
+
+                    # Emit the full text as incremental text_delta events so the
+                    # frontend sees a live-typing effect even without true streaming.
+                    if gemini_full_text and step_callback:
+                        # Send in word-sized chunks (~50 chars) for a smooth effect
+                        chunk_size = 50
+                        for i in range(0, len(gemini_full_text), chunk_size):
+                            step_callback({"type": "text_delta", "content": gemini_full_text[i:i+chunk_size]})
 
                     class _TC:
                         def __init__(self, id_, name, args_str):
@@ -575,7 +600,7 @@ class Agent:
                             for fc in fn_calls
                         ]
                     else:
-                        assistant_msg.content = gemini_response.text or ""
+                        assistant_msg.content = gemini_full_text or ""
                 except Exception as e:
                     final_response = f"Gemini API error: ❗ {e}"
                     break
@@ -591,17 +616,133 @@ class Agent:
                         api_msg["name"] = m["name"]
                     api_messages.append(api_msg)
                 try:
-                    response = self.client.chat.completions.create(
+                    # Use streaming so text/reasoning tokens reach the frontend
+                    # incrementally via step_callback("text_delta").
+                    stream = self.client.chat.completions.create(
                         model=self.model,
                         messages=api_messages,
                         tools=self.openai_tools,
                         tool_choice="auto" if self.openai_tools else None,
-                        timeout=self.config.get('llm_timeout_seconds', 60)
+                        timeout=self.config.get('llm_timeout_seconds', 60),
+                        stream=True,
                     )
+
+                    # Accumulate the streamed response into a synthetic message object.
+                    accumulated_content = []
+                    accumulated_tool_calls: dict = {}  # index -> dict
+
+                    # Think-block filter state.
+                    # Models like DeepSeek emit <think>...</think> reasoning blocks
+                    # inside delta.content. We suppress text_delta events for that
+                    # content so the frontend only sees clean output text, and the
+                    # final.content assembled below is also stripped of think blocks.
+                    _think_buf = ""        # partial tag accumulator
+                    _in_think = False      # currently inside a <think> block
+
+                    def _filter_delta(raw):
+                        nonlocal _think_buf, _in_think
+                        visible = ""
+                        for ch in raw:
+                            if _in_think:
+                                _think_buf += ch
+                                if _think_buf.endswith("</think>"):
+                                    _in_think = False
+                                    _think_buf = ""
+                            else:
+                                _think_buf += ch
+                                if "<think>" in _think_buf:
+                                    visible += _think_buf[: _think_buf.index("<think>")]
+                                    _in_think = True
+                                    _think_buf = ""
+                                elif not "<think>".startswith(_think_buf):
+                                    visible += _think_buf
+                                    _think_buf = ""
+                        # Flush safe partial buffer when outside a think block
+                        if not _in_think and _think_buf and not "<think>".startswith(_think_buf):
+                            visible += _think_buf
+                            _think_buf = ""
+                        return visible
+
+                    for chunk in stream:
+                        delta = chunk.choices[0].delta if chunk.choices else None
+                        if delta is None:
+                            continue
+
+                        # ── Text / reasoning tokens ──────────────────────
+                        if delta.content:
+                            accumulated_content.append(delta.content)
+                            visible = _filter_delta(delta.content)
+                            if visible and step_callback:
+                                step_callback({
+                                    "type": "text_delta",
+                                    "content": visible,
+                                })
+
+
+                        # ── Tool-call deltas ──────────────────────────────
+                        if delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                entry = accumulated_tool_calls[idx]
+                                if tc_delta.id:
+                                    entry["id"] += tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        entry["function"]["name"] += tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        entry["function"]["arguments"] += tc_delta.function.arguments
+
+                    # Build a lightweight object that mimics openai ChatCompletionMessage
+                    class _StreamedMessage:
+                        def __init__(self, content, tool_calls_list):
+                            self.content = content
+                            self.tool_calls = tool_calls_list or None
+
+                    class _TC:
+                        def __init__(self, d):
+                            self.id = d["id"]
+                            self.type = "function"
+                            class _F:
+                                pass
+                            self.function = _F()
+                            self.function.name = d["function"]["name"]
+                            self.function.arguments = d["function"]["arguments"]
+
+                    tc_list = (
+                        [_TC(accumulated_tool_calls[i]) for i in sorted(accumulated_tool_calls)]
+                        if accumulated_tool_calls
+                        else None
+                    )
+                    # Extract only the visible (post-think) portion of the response.
+                    # Models like DeepSeek wrap reasoning in <think>...</think>.
+                    # We take everything after the last </think> tag as the canonical
+                    # answer — this preserves any text the model placed after its
+                    # reasoning block, including any leading word that was mistakenly
+                    # placed at the boundary of the think block.
+                    import re as _re
+                    _raw_content = "".join(accumulated_content) if accumulated_content else None
+                    if _raw_content:
+                        # If there's a </think> tag, everything after it is the answer.
+                        _think_end = _raw_content.rfind("</think>")
+                        if _think_end != -1:
+                            _raw_content = _raw_content[_think_end + len("</think>"):].lstrip("\n")
+                        else:
+                            # No closing tag — strip any open <think> block defensively
+                            _raw_content = _re.sub(r"<think>.*?</think>", "", _raw_content, flags=_re.DOTALL).lstrip("\n")
+                    assistant_msg = _StreamedMessage(
+                        content=_raw_content or None,
+                        tool_calls_list=tc_list,
+                    )
+
                 except Exception as e:
                     final_response = f"OpenAI API error: ❗ {e}"
                     break
-                assistant_msg = response.choices[0].message
 
             # ── Persist assistant message (re-acquire lock) ──────────────
             tool_calls_json = None

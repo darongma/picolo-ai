@@ -77,7 +77,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
 
-    await update.message.reply_text("⏳ Working…")
+    # Send an initial status message that we will edit in-place as the agent works.
+    status_msg = await update.message.reply_text("⏳ Working…")
 
     step_queue: queue.Queue = queue.Queue()
 
@@ -95,48 +96,95 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread = threading.Thread(target=run_agent, daemon=True)
     thread.start()
 
-    last_progress_text = ""
+    # Accumulated streamed text from text_delta events.
+    streamed_text = ""
+    # Throttle Telegram edits: only push an update when enough new chars arrived
+    # or enough time has passed (avoids hitting Telegram's rate limits).
+    last_edited_text = ""
+    EDIT_MIN_CHARS = 20   # minimum new characters before triggering an edit
+    EDIT_MAX_WAIT = 1.5   # seconds: force an edit even if EDIT_MIN_CHARS not met
+
+    last_edit_time = asyncio.get_event_loop().time()
+
+    async def _edit_status(new_text: str):
+        """Edit status_msg, silently ignoring 'message not modified' errors."""
+        nonlocal last_edited_text, last_edit_time
+        trimmed = new_text[:4096]
+        if trimmed == last_edited_text:
+            return
+        try:
+            await status_msg.edit_text(trimmed)
+            last_edited_text = trimmed
+            last_edit_time = asyncio.get_event_loop().time()
+        except Exception:
+            pass  # e.g. MessageNotModified — safe to ignore
 
     async def drain_queue():
-        nonlocal last_progress_text
+        nonlocal streamed_text, last_edit_time
+
         while True:
             try:
                 event = step_queue.get_nowait()
             except queue.Empty:
-                await asyncio.sleep(0.3)
+                # Flush any pending streamed text that hasn't been pushed yet
+                if streamed_text and streamed_text != last_edited_text:
+                    elapsed = asyncio.get_event_loop().time() - last_edit_time
+                    if elapsed >= EDIT_MAX_WAIT:
+                        await _edit_status(streamed_text)
+                await asyncio.sleep(0.15)
                 continue
 
             if event is None:
                 break
 
             ev_type = event.get("type")
-            message_to_send = ""
 
-            if ev_type == "error":
-                err = event.get("content", "Unknown error")
-                message_to_send = f"❌ Error: {err}"
-                # We set message_to_send so it gets handled by the chunker below
-            
+            if ev_type == "text_delta":
+                # Append the new token and conditionally push an edit.
+                streamed_text += event.get("content", "")
+                new_chars = len(streamed_text) - len(last_edited_text)
+                elapsed = asyncio.get_event_loop().time() - last_edit_time
+                if new_chars >= EDIT_MIN_CHARS or elapsed >= EDIT_MAX_WAIT:
+                    await _edit_status(streamed_text)
+
+            elif ev_type == "thinking":
+                iteration = event.get("iteration", "?")
+                status = f"🧠 Thinking… (step {iteration})"
+                streamed_text = ""          # reset for this new LLM turn
+                last_edited_text = ""
+                await _edit_status(status)
+
+            elif ev_type == "tool_call":
+                progress = _format_progress(event)
+                await _edit_status(progress)
+
+            elif ev_type == "tool_result":
+                progress = _format_progress(event)
+                await _edit_status(progress)
+
             elif ev_type == "final":
                 final_text = event.get("content", "")
                 tokens = event.get("tokens")
                 token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
-                message_to_send = final_text + token_note
-                
-            else:
-                # Progress updates
-                full_text = _format_progress(event)
-                if full_text != last_progress_text:
-                    last_progress_text = full_text
-                    message_to_send = full_text
+                full_final = final_text + token_note
 
-            # Only send if we actually have text (ignores duplicate progress)
-            if message_to_send:
-                for i in range(0, len(message_to_send), 4096):
-                    await update.message.reply_text(message_to_send[i:i + 4096])
-            
-            # If it was a final message or error, we are done draining
-            if ev_type in ["final", "error"]:
+                # Replace the status message with the final answer.
+                # If the answer fits in one message, edit in-place; otherwise
+                # delete the status bubble and send fresh chunks.
+                if len(full_final) <= 4096:
+                    await _edit_status(full_final)
+                else:
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
+                    for i in range(0, len(full_final), 4096):
+                        await update.message.reply_text(full_final[i:i + 4096])
+                break
+
+            elif ev_type == "error":
+                err = event.get("content", "Unknown error")
+                await _edit_status(f"❌ Error: {err}")
                 break
 
     await drain_queue()

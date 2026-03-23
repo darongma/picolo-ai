@@ -114,7 +114,7 @@ async def update_config(request: Request):
     with config_lock:
         try:
             agent.save_config(data)
-            return {"status": "updated"}
+            return agent.config.copy()
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
