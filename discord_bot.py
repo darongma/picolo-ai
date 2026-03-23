@@ -120,8 +120,7 @@ async def on_message(message: discord.Message):
 
     session_id = str(message.channel.id)
 
-    # Send an initial placeholder we'll edit live
-    status_msg = await message.reply("⏳ *Working…*")
+    await message.reply("⏳ *Working…*")
 
     step_queue: queue.Queue = queue.Queue()
     loop = asyncio.get_running_loop()
@@ -163,34 +162,24 @@ async def on_message(message: discord.Message):
         if ev_type == "final":
             final_text = event.get("content", "")
             tokens = event.get("tokens")
-            token_note = f"\n_ 💰 Tokens 🔥: {tokens:,} _" if tokens else ""
-            first_chunk = (final_text + token_note)[:2000]  # use :2000 for Discord
-            try:
-                await status_msg.edit(content=first_chunk)
-            except Exception:
-                await message.reply(first_chunk)
-            for i in range(2000, len(final_text), 2000):
-                await message.reply(final_text[i:i + 2000])
+            token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
+            full_text = final_text + token_note
+            for i in range(0, len(full_text), 2000):
+                await message.reply(full_text[i:i + 2000])
             break
 
         elif ev_type == "error":
             err = event.get("content", "Unknown error")
-            try:
-                await status_msg.edit(content=f"❌ Error: {err}")
-            except Exception:
-                await message.reply(f"❌ Error: {err}")
+            await message.reply(f"❌ Error: {err}")
             break
 
         else:
-            # thinking / tool_call / tool_result — update progress in-place
+            # thinking / tool_call / tool_result — reply with a short snippet
             accumulated.append(event)
             new_text = _format_progress(accumulated)
             if new_text != last_progress_text:
-                try:
-                    await status_msg.edit(content=new_text)
-                    last_progress_text = new_text
-                except Exception:
-                    pass  # rate-limited edits are fine to skip
+                await message.reply(new_text[:177])
+                last_progress_text = new_text
 
 
 def main():

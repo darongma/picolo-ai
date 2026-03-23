@@ -83,8 +83,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
 
-    # Send an initial placeholder message that we'll edit live
-    status_msg = await update.message.reply_text("⏳ _Working…_", parse_mode="Markdown")
+    await update.message.reply_text("⏳ _Working…_", parse_mode="Markdown")
 
     step_queue: queue.Queue = queue.Queue()
     loop = asyncio.get_running_loop()
@@ -125,36 +124,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if ev_type == "final":
                 final_text = event.get("content", "")
                 tokens = event.get("tokens")
-                token_note = f"\n_ 💰 Tokens 🔥: {tokens:,} _" if tokens else ""
-                first_chunk = (final_text + token_note)[:4096]  # use :2000 for Discord
-                try:
-                    await status_msg.edit_text(first_chunk)
-                except Exception:
-                    await update.message.reply_text(first_chunk)
-                # Send any overflow chunks as follow-up messages
-                for i in range(4096, len(final_text), 4096):
-                    await update.message.reply_text(final_text[i:i + 4096])
+                token_note = f"\n\n💰 Tokens 🔥: {tokens:,}" if tokens else ""
+                full_text = final_text + token_note
+                for i in range(0, len(full_text), 4096):
+                    await update.message.reply_text(full_text[i:i + 4096])
                 break
 
             elif ev_type == "error":
                 err = event.get("content", "Unknown error")
-                try:
-                    await status_msg.edit_text(f"❌ Error: {err}")
-                except Exception:
-                    await update.message.reply_text(f"❌ Error: {err}")
+                await update.message.reply_text(f"❌ Error: {err}")
                 break
 
             else:
-                # thinking / tool_call / tool_result — update progress in-place
+                # thinking / tool_call / tool_result — reply with a short snippet
                 accumulated.append(event)
                 new_text = _format_progress(accumulated)
-                # Only edit if text actually changed (avoids Telegram rate-limit errors)
                 if new_text != last_progress_text:
-                    try:
-                        await status_msg.edit_text(new_text, parse_mode="Markdown")
-                        last_progress_text = new_text
-                    except Exception:
-                        pass  # edits can fail on rate-limit; silently skip
+                    await update.message.reply_text(new_text[:177], parse_mode="Markdown")
+                    last_progress_text = new_text
 
     await drain_queue()
 
