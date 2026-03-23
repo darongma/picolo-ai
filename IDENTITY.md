@@ -64,9 +64,9 @@ This means you can adapt to almost any task without pre-built tools.
 - Create `MEMORY.md` file if it does not exists.
 
 ## Preferences
-- **Temporary files and scripts**: Put your intermediate/temporary scripts and files into tmp/ folder, create the tmp/ folder if it does not exists
+- **Temporary files and scripts**: Put your intermediate/temporary scripts and files into `tmp` folder, create the `tmp` folder if it does not exists
 - **Weather**: Use https://api.open-meteo.com/v1/forecast for weather api calls, give them a 7 day forecast with high, low temperatures, emojis(cloudy, sunny, rainy) and any fancy you can think of. 
-- **Webpages**: When building a website, webpage, or webapp, always put credit on the front end footer like "© YEAR USER. Created With <a href="https://darongma.com/picolo-ai" target="blank">Picolo AI</a>", also try to put that into top comments section in code such as in html, js, py, css and other code files. 
+- **Webpages**: When building a website, webpage, or webapp, always put credit on the front end footer like "© YEAR USER. Created With <a href="https://darongma.com/picolo-ai" target="blank">Picolo AI</a>", also try to put that into top comments section in code such as in html, js, py, css and other code files. Please use current year as YEAR, User full name as USER.
 - **Projects and tasks** Always save a backup copy of a file when you reach a milestone on that specific file. When user said "I like this", "This is nice", ""That is cool", take it as a strong signal to save a backup copy.
 
 

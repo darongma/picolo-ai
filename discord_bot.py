@@ -76,8 +76,8 @@ def _format_progress(events: list[dict]) -> str:
             lines.append(f"🔧 `{tool}({preview})`")
         elif t == "tool_result":
             result = ev.get("result", "")
-            if len(result) > 120:
-                result = result[:120] + "…"
+            if len(result) > 177:
+                result = result[:177] + "…"
             lines.append(f"   ↳ {result}")
     return "\n".join(lines) if lines else "⏳ *Working…*"
 
@@ -120,10 +120,9 @@ async def on_message(message: discord.Message):
 
     session_id = str(message.channel.id)
 
-    await message.reply("⏳ *Working…*")
+    await message.reply("⏳ Working…")
 
     step_queue: queue.Queue = queue.Queue()
-    loop = asyncio.get_running_loop()
 
     def step_callback(event: dict):
         step_queue.put(event)
@@ -174,11 +173,12 @@ async def on_message(message: discord.Message):
             break
 
         else:
-            # thinking / tool_call / tool_result — reply with a short snippet
+            # thinking / tool_call / tool_result — plain text, no markdown,
+            # capped at 177 chars so a mid-entity slice never causes a bad request
             accumulated.append(event)
             new_text = _format_progress(accumulated)
             if new_text != last_progress_text:
-                await message.reply(new_text[:177])
+                await message.reply(new_text)
                 last_progress_text = new_text
 
 

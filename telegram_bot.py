@@ -53,7 +53,7 @@ def _format_progress(events: list[dict]) -> str:
     for ev in events:
         t = ev.get("type")
         if t == "thinking":
-            lines.append(f"🤔 _Thinking… (iteration {ev.get('iteration', '?')})_")
+            lines.append(f"🤔 Thinking… (iteration {ev.get('iteration', '?')})")
         elif t == "tool_call":
             tool = ev.get("tool", "?")
             try:
@@ -67,8 +67,8 @@ def _format_progress(events: list[dict]) -> str:
             tool = ev.get("tool", "?")
             result = ev.get("result", "")
             # Truncate long results
-            if len(result) > 120:
-                result = result[:120] + "…"
+            if len(result) > 177:
+                result = result[:177] + "…"
             lines.append(f"   ↳ {result}")
     return "\n".join(lines) if lines else "⏳ _Working…_"
 
@@ -83,10 +83,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
 
-    await update.message.reply_text("⏳ _Working…_", parse_mode="Markdown")
+    await update.message.reply_text("⏳ Working…")
 
     step_queue: queue.Queue = queue.Queue()
-    loop = asyncio.get_running_loop()
 
     def step_callback(event: dict):
         step_queue.put(event)
@@ -108,7 +107,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def drain_queue():
         nonlocal last_progress_text
         while True:
-            # Poll the queue without blocking the event loop
             try:
                 event = step_queue.get_nowait()
             except queue.Empty:
@@ -116,7 +114,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             if event is None:
-                # Sentinel — agent is done; the "final" event already handled output
                 break
 
             ev_type = event.get("type")
@@ -136,11 +133,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
             else:
-                # thinking / tool_call / tool_result — reply with a short snippet
+                # thinking / tool_call / tool_result — send plain-text snippet (no parse_mode,
+                # so a mid-entity slice never causes a Bad Request)
                 accumulated.append(event)
                 new_text = _format_progress(accumulated)
                 if new_text != last_progress_text:
-                    await update.message.reply_text(new_text[:177], parse_mode="Markdown")
+                    await update.message.reply_text(new_text)
                     last_progress_text = new_text
 
     await drain_queue()
