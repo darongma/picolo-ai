@@ -3,8 +3,11 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import sys
+import threading
 from pathlib import Path
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -17,7 +20,6 @@ from agent_core import Agent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("telegram_bot")
 
-# Global agent instance (thread-safe)
 agent = None
 
 def load_config():
@@ -25,7 +27,6 @@ def load_config():
     with open(config_path, 'r') as f:
         return json.load(f)
 
-# Load allowed users once at startup for efficiency
 _initial_cfg = load_config()
 ALLOWED_USERS = []
 for x in _initial_cfg.get("telegram_allowed_users", []):
@@ -41,47 +42,136 @@ def init_agent():
         agent = Agent(config_path=config_path)
     return agent
 
+
+def _format_progress(events: list[dict]) -> str:
+    """
+    Build a human-readable progress string from accumulated step events.
+    Each tool call/result pair is collapsed into a single line so the
+    message stays compact as it grows.
+    """
+    lines = []
+    for ev in events:
+        t = ev.get("type")
+        if t == "thinking":
+            lines.append(f"🤔 _Thinking… (iteration {ev.get('iteration', '?')})_")
+        elif t == "tool_call":
+            tool = ev.get("tool", "?")
+            try:
+                args = json.loads(ev.get("args", "{}"))
+                # Show at most one key=value pair to keep it short
+                preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
+            except Exception:
+                preview = ev.get("args", "")
+            lines.append(f"🔧 `{tool}({preview})`")
+        elif t == "tool_result":
+            tool = ev.get("tool", "?")
+            result = ev.get("result", "")
+            # Truncate long results
+            if len(result) > 120:
+                result = result[:120] + "…"
+            lines.append(f"   ↳ {result}")
+    return "\n".join(lines) if lines else "⏳ _Working…_"
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     user = update.effective_user
     text = update.message.text or ""
 
-    # Security: check allowed users if configured
     if ALLOWED_USERS and user.id not in ALLOWED_USERS:
         logger.warning(f"Unauthorized user {user.id} (chat {chat_id}) attempted to use bot.")
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
 
-    # Indicate typing
-    await update.message.chat.send_action(action="typing")
+    # Send an initial placeholder message that we'll edit live
+    status_msg = await update.message.reply_text("⏳ _Working…_", parse_mode="Markdown")
 
-    # Run agent in a thread to avoid blocking the async loop
+    step_queue: queue.Queue = queue.Queue()
     loop = asyncio.get_running_loop()
-    try:
-        response, total, history = await loop.run_in_executor(None, init_agent().chat, text, chat_id)
-    except Exception as e:
-        logger.exception(f"Agent error for chat {chat_id}: {e}")
-        response = f"Error: {e}"
 
-    # Telegram message limit is 4096 chars; split if necessary
-    for i in range(0, len(response), 4096):
-        chunk = response[i:i+4096]
-        await update.message.reply_text(chunk)
+    def step_callback(event: dict):
+        step_queue.put(event)
+
+    def run_agent():
+        try:
+            init_agent().chat(text, chat_id, step_callback=step_callback)
+        except Exception as e:
+            step_queue.put({"type": "error", "content": str(e)})
+        finally:
+            step_queue.put(None)  # sentinel
+
+    thread = threading.Thread(target=run_agent, daemon=True)
+    thread.start()
+
+    accumulated: list[dict] = []
+    last_progress_text = ""
+
+    async def drain_queue():
+        nonlocal last_progress_text
+        while True:
+            # Poll the queue without blocking the event loop
+            try:
+                event = step_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.3)
+                continue
+
+            if event is None:
+                # Sentinel — agent is done; the "final" event already handled output
+                break
+
+            ev_type = event.get("type")
+
+            if ev_type == "final":
+                final_text = event.get("content", "")
+                tokens = event.get("tokens")
+                token_note = f"\n_ 💰 Tokens 🔥: {tokens:,} _" if tokens else ""
+                first_chunk = (final_text + token_note)[:4096]  # use :2000 for Discord
+                try:
+                    await status_msg.edit_text(first_chunk)
+                except Exception:
+                    await update.message.reply_text(first_chunk)
+                # Send any overflow chunks as follow-up messages
+                for i in range(4096, len(final_text), 4096):
+                    await update.message.reply_text(final_text[i:i + 4096])
+                break
+
+            elif ev_type == "error":
+                err = event.get("content", "Unknown error")
+                try:
+                    await status_msg.edit_text(f"❌ Error: {err}")
+                except Exception:
+                    await update.message.reply_text(f"❌ Error: {err}")
+                break
+
+            else:
+                # thinking / tool_call / tool_result — update progress in-place
+                accumulated.append(event)
+                new_text = _format_progress(accumulated)
+                # Only edit if text actually changed (avoids Telegram rate-limit errors)
+                if new_text != last_progress_text:
+                    try:
+                        await status_msg.edit_text(new_text, parse_mode="Markdown")
+                        last_progress_text = new_text
+                    except Exception:
+                        pass  # edits can fail on rate-limit; silently skip
+
+    await drain_queue()
+
 
 async def handle_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     user = update.effective_user
-    # Security check
     if ALLOWED_USERS and user.id not in ALLOWED_USERS:
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
         return
     try:
-        agent = init_agent()
-        agent.clear_history(chat_id)
+        init_agent().clear_history(chat_id)
         await update.message.reply_text("✅ New conversation started. Previous messages cleared.")
     except Exception as e:
         logger.exception(f"Error clearing history for chat {chat_id}: {e}")
         await update.message.reply_text(f"Error: {e}")
+
 
 def main():
     cfg = load_config()
@@ -90,13 +180,13 @@ def main():
         logger.error("No telegram_token set in config.json. Exiting.")
         sys.exit(1)
 
-    # Build application
     application = Application.builder().token(token).build()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CommandHandler("new", handle_new))
 
     logger.info("Telegram bot starting...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,9 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import sys
+import threading
 from pathlib import Path
 
 import discord
@@ -18,15 +20,15 @@ from agent_core import Agent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("discord_bot")
 
-# Load config
+
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path, 'r') as f:
         return json.load(f)
 
+
 cfg = load_config()
 TOKEN = cfg.get("discord_token", "").strip()
-# Convert allowed users to integers (IDs may be stored as strings)
 ALLOWED_USERS = []
 for x in cfg.get("discord_allowed_users", []):
     try:
@@ -38,14 +40,13 @@ if not TOKEN:
     logger.error("No discord_token set in config.json. Exiting.")
     sys.exit(1)
 
-# Set up intents
 intents = discord.Intents.default()
-intents.message_content = True  # required to read message text
+intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Global agent instance (shared across events)
 agent = None
+
 
 async def get_agent():
     global agent
@@ -54,18 +55,44 @@ async def get_agent():
         agent = Agent(config_path=config_path)
     return agent
 
+
+def _format_progress(events: list[dict]) -> str:
+    """
+    Build a human-readable progress string from accumulated step events.
+    Keeps the running Discord message compact and readable.
+    """
+    lines = []
+    for ev in events:
+        t = ev.get("type")
+        if t == "thinking":
+            lines.append(f"🤔 *Thinking… (iteration {ev.get('iteration', '?')})*")
+        elif t == "tool_call":
+            tool = ev.get("tool", "?")
+            try:
+                args = json.loads(ev.get("args", "{}"))
+                preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
+            except Exception:
+                preview = ev.get("args", "")
+            lines.append(f"🔧 `{tool}({preview})`")
+        elif t == "tool_result":
+            result = ev.get("result", "")
+            if len(result) > 120:
+                result = result[:120] + "…"
+            lines.append(f"   ↳ {result}")
+    return "\n".join(lines) if lines else "⏳ *Working…*"
+
+
 @bot.event
 async def on_ready():
     logger.info(f'Discord bot logged in as {bot.user} (ID: {bot.user.id})')
     logger.info('------')
 
+
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignore messages from bots (including ourselves)
     if message.author.bot:
         return
 
-    # Allowed users check
     if ALLOWED_USERS and message.author.id not in ALLOWED_USERS:
         logger.warning(f"Unauthorized Discord user {message.author.id} tried to use bot.")
         try:
@@ -74,7 +101,7 @@ async def on_message(message: discord.Message):
             pass
         return
 
-    # Command: /new – start a new conversation (clear history)
+    # Command: new/ — start a new conversation
     if message.content.strip() == 'new/':
         session_id = str(message.channel.id)
         try:
@@ -86,31 +113,89 @@ async def on_message(message: discord.Message):
             await message.reply(f"Error: {e}")
         return
 
-    # Only respond to DMs or when mentioned in a guild channel
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = bot.user in message.mentions
     if not is_dm and not is_mentioned:
         return
 
-    async with message.channel.typing():
-        try:
-            ag = await get_agent()
-            # Use DM channel's ID or guild+channel ID as session_id
-            session_id = str(message.channel.id)
-            response, total, history = await asyncio.to_thread(ag.chat, message.content, session_id)
-            # Discord limit is 2000 chars; split if necessary
-            for i in range(0, len(response), 2000):
-                chunk = response[i:i+2000]
-                await message.reply(chunk)
-        except Exception as e:
-            logger.exception(f"Error handling Discord message: {e}")
+    session_id = str(message.channel.id)
+
+    # Send an initial placeholder we'll edit live
+    status_msg = await message.reply("⏳ *Working…*")
+
+    step_queue: queue.Queue = queue.Queue()
+    loop = asyncio.get_running_loop()
+
+    def step_callback(event: dict):
+        step_queue.put(event)
+
+    async def run_agent_async():
+        ag = await get_agent()
+
+        def _blocking():
             try:
-                await message.reply(f"Error: {e}")
+                ag.chat(message.content, session_id, step_callback=step_callback)
+            except Exception as e:
+                step_queue.put({"type": "error", "content": str(e)})
+            finally:
+                step_queue.put(None)  # sentinel
+
+        thread = threading.Thread(target=_blocking, daemon=True)
+        thread.start()
+
+    await run_agent_async()
+
+    accumulated: list[dict] = []
+    last_progress_text = ""
+
+    while True:
+        try:
+            event = step_queue.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.3)
+            continue
+
+        if event is None:
+            break
+
+        ev_type = event.get("type")
+
+        if ev_type == "final":
+            final_text = event.get("content", "")
+            tokens = event.get("tokens")
+            token_note = f"\n_ 💰 Tokens 🔥: {tokens:,} _" if tokens else ""
+            first_chunk = (final_text + token_note)[:2000]  # use :2000 for Discord
+            try:
+                await status_msg.edit(content=first_chunk)
             except Exception:
-                pass
+                await message.reply(first_chunk)
+            for i in range(2000, len(final_text), 2000):
+                await message.reply(final_text[i:i + 2000])
+            break
+
+        elif ev_type == "error":
+            err = event.get("content", "Unknown error")
+            try:
+                await status_msg.edit(content=f"❌ Error: {err}")
+            except Exception:
+                await message.reply(f"❌ Error: {err}")
+            break
+
+        else:
+            # thinking / tool_call / tool_result — update progress in-place
+            accumulated.append(event)
+            new_text = _format_progress(accumulated)
+            if new_text != last_progress_text:
+                try:
+                    await status_msg.edit(content=new_text)
+                    last_progress_text = new_text
+                except Exception:
+                    pass  # rate-limited edits are fine to skip
+
 
 def main():
     bot.run(TOKEN, log_handler=None)
+
 
 if __name__ == "__main__":
     main()
