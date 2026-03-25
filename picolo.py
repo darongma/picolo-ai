@@ -82,7 +82,8 @@ def launch_web(port=8000, open_browser=True):
         else:
             print(f"Server starting at http://localhost:{port}")
 
-        uvicorn.run(web_main.app, host="0.0.0.0", port=port)
+        #uvicorn.run(web_main.app, host="0.0.0.0", port=port)
+        uvicorn.run(web_main.app, host="127.0.0.1", port=port)
     except ImportError as e:
         print("Missing dependencies for the web UI.")
         print("Please install them:")

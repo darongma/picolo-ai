@@ -1,11 +1,10 @@
 {
   "provider": null,
-  "base_url": null,
   "model": null,
   "db_path": "picolo.db",
   "tools_dir": "tools",
   "session_id": "default",
-  "max_input_tokens": 70000,
+  "max_input_tokens": 30000,
   "max_tool_iterations": 50,
   "max_tool_errors":2,
   "llm_timeout_seconds": 120,
@@ -17,12 +16,12 @@
   "log":false,
   "log_file": "picolo.log",
   "log_max_size": 5242880,
-  "log_backup_count": 3,
+  "log_backup_count": 1,
   "system_prompt": "You are Picolo, a helpful AI assistant. Use the shell tool sparingly and only for user-requested tasks. Be concise and accurate.",
   "telegram_token": "",
-  "telegram_allowed_users": [""],
+  "telegram_allowed_users": ["12345"],
   "discord_token": "",
-  "discord_allowed_users": [""],
+  "discord_allowed_users": ["12345"],
   "email": {
     "smtp_server": "",
     "smtp_port": 587,
@@ -37,7 +36,10 @@
       "id": "nvidia",
       "name": "NVIDIA",
       "base_url": "https://integrate.api.nvidia.com/v1",
-      "models": ["stepfun-ai/step-3.5-flash", "stepfun-ai/step-3.5-turbo", "stepfun-ai/step-3.1-max"],
+      "models": [
+        "stepfun-ai/step-3.5-flash",
+        "qwen/qwen3.5-122b-a10b"
+      ],
       "api_key": ""
     },
     {
@@ -59,7 +61,9 @@
       "name": "Google",
       "base_url": "https://generativelanguage.googleapis.com/v1beta",
       "api_key": "",
-      "models": ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+      "models": [
+        "gemini-3.1-flash-lite-preview"
+      ]
     },
     {
       "id": "groq",
@@ -73,7 +77,13 @@
       "name": "OpenRouter",
       "base_url": "https://openrouter.ai/api/v1",
       "api_key": "",
-      "models": ["openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-001"]
+      "models": [
+        "openrouter/free",
+        "nvidia/nemotron-nano-9b-v2:free",
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "stepfun/step-3.5-flash:free",
+        "nvidia/nemotron-3-super-120b-a12b:free"
+      ]
     },
     {
       "id": "custom",
