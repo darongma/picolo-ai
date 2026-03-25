@@ -16,3 +16,4 @@ memory/
 PROFILE.md
 MEMORY.md
 tmp/
+*.Identifier

@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root))
 from agent_core import Agent
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("telegram_bot")
 
 agent = None
