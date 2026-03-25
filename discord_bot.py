@@ -20,6 +20,10 @@ from agent_core import Agent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("discord_bot")
 
+# Directory where attachments are saved so the agent can read them via tools.
+ATTACHMENTS_DIR = project_root / "attachments"
+ATTACHMENTS_DIR.mkdir(exist_ok=True)
+
 
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -68,13 +72,42 @@ def _format_progress(ev) -> str:
             preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
         except Exception:
             preview = ev.get("args", "")
-        preview=preview[:177]+"..."
+        preview = preview[:177] + "..."
         lines.append(f"⚡ `{tool}({preview})`")
     elif t == "tool_result":
         result = ev.get("result", "")
         result = result[:177] + "…"
         lines.append(f"💾 {result}")
     return "\n".join(lines) if lines else "⏳ *Working…*"
+
+
+async def download_attachments(message: discord.Message) -> list[str]:
+    """Download all attachments from a Discord message.
+
+    Returns a list of absolute local paths where files were saved.
+    Discord messages can have multiple attachments, so we handle all of them.
+    """
+    saved_paths = []
+    for attachment in message.attachments:
+        ext = Path(attachment.filename).suffix or ".bin"
+        # Use the Discord attachment ID to avoid filename collisions.
+        file_name = f"{attachment.id}{ext}"
+        local_path = ATTACHMENTS_DIR / file_name
+
+        # Skip re-downloading if we already have it.
+        if not local_path.exists():
+            try:
+                await attachment.save(str(local_path))
+                logger.info(f"Attachment saved: {local_path}")
+            except Exception as e:
+                logger.warning(f"Failed to download attachment {attachment.filename}: {e}")
+                continue
+        else:
+            logger.info(f"Attachment already exists, reusing: {local_path}")
+
+        saved_paths.append(str(local_path))
+
+    return saved_paths
 
 
 @bot.event
@@ -110,10 +143,33 @@ async def on_message(message: discord.Message):
 
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_mentioned = bot.user in message.mentions
+    has_attachments = len(message.attachments) > 0
+
+    # Respond to DMs, mentions, or messages that have attachments (in DM or when mentioned).
     if not is_dm and not is_mentioned:
         return
 
     session_id = str(message.channel.id)
+
+    # Download any attached files before showing the status bubble.
+    saved_paths = []
+    if has_attachments:
+        saved_paths = await download_attachments(message)
+
+    # Build the text the agent receives.
+    base_text = message.content.strip()
+
+    if saved_paths:
+        paths_note = "\n".join(f"[Attached file saved to: {p}]" for p in saved_paths)
+        text = f"{base_text}\n\n{paths_note}".strip()
+        logger.info(f"Message with {len(saved_paths)} attachment(s) from {message.author.id}: '{base_text[:80]}'")
+    else:
+        text = base_text
+        logger.info(f"Text message from {message.author.id}: '{text[:80]}'")
+
+    if not text:
+        await message.reply("Please send a message or attach a file.")
+        return
 
     status_msg = await message.reply("⏳ Working…")
 
@@ -127,7 +183,7 @@ async def on_message(message: discord.Message):
 
         def _blocking():
             try:
-                ag.chat(message.content, session_id, step_callback=step_callback)
+                ag.chat(text, session_id, step_callback=step_callback)
             except Exception as e:
                 step_queue.put({"type": "error", "content": str(e)})
             finally:

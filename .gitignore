@@ -17,3 +17,5 @@ PROFILE.md
 MEMORY.md
 tmp/
 *.Identifier
+attachments/
+env/

@@ -23,6 +23,10 @@ logger = logging.getLogger("telegram_bot")
 
 agent = None
 
+# Directory where attachments are saved so the agent can read them via tools.
+ATTACHMENTS_DIR = project_root / "attachments"
+ATTACHMENTS_DIR.mkdir(exist_ok=True)
+
 def load_config():
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path, 'r') as f:
@@ -53,11 +57,11 @@ def _format_progress(ev) -> str:
         tool = ev.get("tool", "?")
         try:
             args = json.loads(ev.get("args", "{}"))
-            # Show at most one key=value pair to keep it short
+            # Show at most two key=value pairs to keep it short
             preview = ", ".join(f"{k}={repr(v)}" for k, v in list(args.items())[:2])
         except Exception:
             preview = ev.get("args", "")
-        preview=preview[:177]+"..."
+        preview = preview[:177] + "..."
         lines.append(f"⚡ `{tool}({preview})`")
     elif t == "tool_result":
         tool = ev.get("tool", "?")
@@ -68,14 +72,69 @@ def _format_progress(ev) -> str:
     return "\n".join(lines) if lines else "⏳ Working…"
 
 
+async def download_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """Download a photo or document attached to the message.
+
+    Returns the absolute local path where the file was saved, or None if the
+    message contains no supported attachment.
+    """
+    msg = update.message
+
+    if msg.photo:
+        # Telegram sends multiple sizes; take the last one (largest).
+        tg_file = await context.bot.get_file(msg.photo[-1].file_id)
+        ext = ".jpg"
+        original_name = None
+    elif msg.document:
+        tg_file = await context.bot.get_file(msg.document.file_id)
+        original_name = msg.document.file_name or "file"
+        ext = Path(original_name).suffix or ".bin"
+    else:
+        return None
+
+    # Use the Telegram file_id as the filename to avoid collisions.
+    file_name = f"{tg_file.file_id}{ext}"
+    local_path = ATTACHMENTS_DIR / file_name
+
+    # Skip re-downloading if we already have it (e.g. user resends same file).
+    if not local_path.exists():
+        await tg_file.download_to_drive(str(local_path))
+        logger.info(f"Attachment saved: {local_path}")
+    else:
+        logger.info(f"Attachment already exists, reusing: {local_path}")
+
+    return str(local_path)
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     user = update.effective_user
-    text = update.message.text or ""
 
     if ALLOWED_USERS and user.id not in ALLOWED_USERS:
         logger.warning(f"Unauthorized user {user.id} (chat {chat_id}) attempted to use bot.")
         await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        return
+
+    # Download any attached file before showing the status bubble.
+    file_path = await download_attachment(update, context)
+
+    # Build the text that the agent will receive.
+    # For photo/document messages the user-visible text comes from the caption;
+    # for plain text messages it comes from message.text.
+    caption = (update.message.caption or "").strip()
+    plain_text = (update.message.text or "").strip()
+    base_text = caption or plain_text
+
+    if file_path:
+        # Tell the agent exactly where the file lives so it can open it.
+        text = f"{base_text}\n\n[Attached file saved to: {file_path}]".strip()
+        logger.info(f"Message with attachment from {user.id}: '{base_text}' -> {file_path}")
+    else:
+        text = base_text
+        logger.info(f"Text message from {user.id}: '{text[:80]}'")
+
+    if not text:
+        await update.message.reply_text("Please send a message or attach a file with a caption.")
         return
 
     # Send an initial status message that we will edit in-place as the agent works.
@@ -213,10 +272,15 @@ def main():
         sys.exit(1)
 
     application = Application.builder().token(token).build()
+
+    # Handle plain text messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # Handle photo and document attachments (with or without caption)
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL, handle_message))
+
     application.add_handler(CommandHandler("new", handle_new))
 
-    logger.info("Telegram bot starting...")
+    logger.info("Telegram bot starting…")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
