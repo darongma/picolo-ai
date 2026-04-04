@@ -17,6 +17,7 @@ import threading
 import multiprocessing
 from threading import Timer
 
+
 def check_web_deps():
     try:
         import fastapi
@@ -25,7 +26,7 @@ def check_web_deps():
     except ImportError:
         return False
 
-def launch_web(port=8000, open_browser=True):
+def launch_web(port=8000, host="127.0.0.1", open_browser=True):
     web_dir = os.path.join(os.path.dirname(__file__), "web")
     if not os.path.exists(web_dir):
         print(f"Error: web directory not found at {web_dir}")
@@ -74,16 +75,20 @@ def launch_web(port=8000, open_browser=True):
         except Exception as e:
             print(f"[Warning] Could not load config.json for bots: {e}", file=sys.stderr)
 
+            
+        port=config.get("port", 8000)
+        host=config.get("host", "127.0.0.1")
         if open_browser:
             def open_browser_tab():
-                webbrowser.open(f"http://localhost:{port}")
+                webbrowser.open(f"http://{host}:{port}")
             Timer(1.0, open_browser_tab).start()
-            print(f"Opening browser to http://localhost:{port} …")
+            print(f"Opening browser to http://{host}:{port} …")
         else:
-            print(f"Server starting at http://localhost:{port}")
+            print(f"Server starting at http://{host}:{port}")
 
         #uvicorn.run(web_main.app, host="0.0.0.0", port=port)
-        uvicorn.run(web_main.app, host="127.0.0.1", port=port)
+
+        uvicorn.run(web_main.app, host=host, port=port)
     except ImportError as e:
         print("Missing dependencies for the web UI.")
         print("Please install them:")

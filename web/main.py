@@ -12,6 +12,7 @@ Changes from original:
                         so the async event loop is never blocked.
 """
 import asyncio
+import datetime
 import json
 import queue
 import sys
@@ -76,6 +77,42 @@ def _sse_line(event_type: str, data: dict) -> str:
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Gemini Live Token ─────────────────────────────────────────────────────────
+
+@app.post("/api/gemini-token")
+async def get_gemini_token():
+    """
+    Generates a short-lived ephemeral token for the Gemini Live WebSocket API.
+    The browser uses this token directly — your GEMINI_API_KEY never leaves the server.
+    Requires: pip install google-genai
+    """
+    try:
+        import os as _os
+        api_key = _os.environ.get("GEMINI_API_KEY") or agent.config.get("gemini_api_key", "").strip()
+        if not api_key:
+            raise HTTPException(
+                status_code=400,
+                detail="GEMINI_API_KEY not set. Add it to config.json as 'gemini_api_key' or set the env var."
+            )
+        from google import genai
+        client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
+        expire_time = now + datetime.timedelta(minutes=30)
+        token = client.auth_tokens.create(
+            config={
+                "uses": 1,
+                "expire_time": expire_time.isoformat(),
+                "new_session_expire_time": (now + datetime.timedelta(minutes=1)).isoformat(),
+                "http_options": {"api_version": "v1alpha"},
+            }
+        )
+        return {"token": token.name, "expires_at": expire_time.isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Gemini token: {e}")
 
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
@@ -244,6 +281,121 @@ def list_tools():
     return {"tools": list(agent.tools_dict.keys())}
 
 
+# ── Voice config (system prompt + tools for Gemini Live) ──────────────────────
+
+@app.get("/api/voice-config")
+def get_voice_config():
+    """
+    Returns the full compiled system prompt (identity + soul + profile + memory
+    + custom prompt) and tool declarations in Gemini function-calling format so
+    the browser can wire them into the Gemini Live session.
+    """
+    # Build Gemini-format tool declarations from the agent's loaded tools
+    gemini_tools = []
+    for name, entry in agent.tools_dict.items():
+        spec = entry["spec"]
+        gemini_tools.append({
+            "name": spec.get("name", name),
+            "description": spec.get("description", ""),
+            "parameters": spec.get("parameters", {}),
+        })
+    return {
+        "system_prompt": agent.system_prompt or "",
+        "tools": gemini_tools,
+    }
+
+
+# ── Voice tool execution ───────────────────────────────────────────────────────
+
+@app.post("/api/voice-tool")
+async def execute_voice_tool(request: Request):
+    """
+    Executes a single tool call on behalf of the voice chat session.
+    The browser sends { tool: str, args: dict, session_id: str, tool_call_id: str } and receives { result: str }.
+    Also saves the tool call and result to the database.
+    """
+    data = await request.json()
+    tool_name = data.get("tool", "")
+    args = data.get("args", {})
+    session_id = data.get("session_id") or agent.session_id
+    tool_call_id = data.get("tool_call_id", "")  # ID from Gemini Live
+
+    if tool_name not in agent.tools_dict:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+
+    try:
+        # First, save the tool call to database as assistant message with tool_calls
+        tool_calls_json = [{
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(args) if args else "{}"
+            }
+        }]
+        
+        # Save assistant message with tool call
+        agent.memory.add_message(
+            session_id=session_id,
+            role="assistant",
+            content="",  # Gemini Live doesn't provide text content with tool calls
+            tool_calls=tool_calls_json
+        )
+        
+        # Execute the tool
+        result = await asyncio.to_thread(agent.tools_dict[tool_name]["run"], **args)
+        
+        # Save tool result to database
+        agent.memory.add_message(
+            session_id=session_id,
+            role="tool",
+            content=str(result),
+            tool_call_id=tool_call_id,
+            tool_name=tool_name
+        )
+        
+        return {"result": str(result)}
+    except Exception as e:
+        # Still save error result to database
+        if 'tool_call_id' in locals() and tool_call_id:
+            agent.memory.add_message(
+                session_id=session_id,
+                role="tool",
+                content=f"Tool execution error: {e}",
+                tool_call_id=tool_call_id,
+                tool_name=tool_name
+            )
+        raise HTTPException(status_code=500, detail=f"Tool execution error: {e}")
+
+
+# ── Voice history persistence ──────────────────────────────────────────────────
+
+@app.post("/api/voice-message")
+async def save_voice_message(request: Request):
+    """
+    Persists a completed voice turn to the same SQLite DB used by text chat.
+    The browser sends { session_id, user_text, agent_text } after each turn.
+    Both messages are tagged with role='user' / role='assistant' exactly as
+    agent.chat() does, so voice history appears seamlessly alongside text history.
+    """
+    data = await request.json()
+    session_id = data.get("session_id") or agent.session_id
+    user_text  = (data.get("user_text")  or "").strip()
+    agent_text = (data.get("agent_text") or "").strip()
+
+    if not user_text and not agent_text:
+        raise HTTPException(status_code=400, detail="At least one of user_text or agent_text is required")
+
+    try:
+        if user_text:
+            agent.memory.add_message(session_id, "user", user_text)
+        if agent_text:
+            agent.memory.add_message(session_id, "assistant", agent_text)
+        return {"status": "saved", "session_id": session_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save voice message: {e}")
+
+
 # ── Static files ──────────────────────────────────────────────────────────────
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
@@ -263,4 +415,6 @@ def read_root():
 
 if __name__ == "__main__":
     #uvicorn.run(app, host="0.0.0.0", port=8000)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port=agent.config.get("port", 8000)
+    host=agent.config.get("host", "127.0.0.1")
+    uvicorn.run(app, host=host, port=port)

@@ -80,28 +80,25 @@ function renderMessage(msg) {
     const toolDiv = document.createElement('div');
     toolDiv.className = 'message tool-result';
     const toolName = msg.name || 'tool';
-
     const header = document.createElement('div');
     header.className = 'tool-header';
     header.textContent = `🛠️ Tool Call Results: 🔨 ${toolName}`;
     header.title = "Click to expand/collapse";
     toolDiv.appendChild(header);
-
     const body = document.createElement('pre');
     body.className = 'tool-body';
     body.textContent = msg.content || '';
     toolDiv.appendChild(body);
-
     // Smooth expand/collapse via class toggle
     header.addEventListener('click', () => {
       toolDiv.classList.toggle('open');
     });
-
     container.appendChild(toolDiv);
     return;
   }
 
   const isChat = msg.role === 'user' || msg.role === 'assistant';
+
   // Compute message number for chat messages (user/assistant)
   let messageNumber = '';
   if (isChat) {
@@ -113,31 +110,23 @@ function renderMessage(msg) {
   }
 
   const timeStr = formatTimestamp(msg.timestamp);
-
   const div = document.createElement('div');
   div.className = `message ${msg.role}`;
 
   // Header with meta info and copy button
   const header = document.createElement('div');
-  header.style.display = 'flex';
-  header.style.justifyContent = 'space-between';
-  header.style.alignItems = 'center';
-  header.style.marginBottom = '4px';
+  header.className = 'message-header';
 
   // Left side: counter and timestamp
   if (isChat) {
     const left = document.createElement('span');
-    left.style.fontSize = '0.8rem';
-    left.style.color = 'var(--text-light)';
-    left.style.opacity = '0.8';
+    left.className = 'message-meta';
     left.textContent = `#${messageNumber} ${timeStr}`;
     header.appendChild(left);
   } else if (timeStr) {
     // For system or other roles
     const left = document.createElement('span');
-    left.style.fontSize = '0.8rem';
-    left.style.color = 'var(--text-light)';
-    left.style.opacity = '0.7';
+    left.className = 'message-meta-system';
     left.textContent = timeStr;
     header.appendChild(left);
   }
@@ -162,10 +151,7 @@ function renderMessage(msg) {
   if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
     const toolNames = msg.tool_calls.map(tc => tc.function.name).join(', ');
     const toolDiv = document.createElement('div');
-    toolDiv.className = 'message tool-call';
-    toolDiv.style.fontSize = '0.85rem';
-    toolDiv.style.marginTop = '4px';
-    toolDiv.style.opacity = '0.9';
+    toolDiv.className = 'message tool-call tool-call-text';
     toolDiv.textContent = ` 💻 ${toolNames} ${msg.tool_calls?.[0]?.function?.arguments.substring(0,77) ?? ""} ...`;
     div.appendChild(toolDiv);
   }
@@ -314,6 +300,9 @@ function populateConfigForm() {
   // Discord fields
   $('discord-token').value = agentConfig.discord_token || '';
   $('discord-allowed-users').value = agentConfig.discord_allowed_users ? agentConfig.discord_allowed_users.join(', ') : '';
+  // Voice (Gemini Live) fields
+  $('gemini-api-key').value = agentConfig.gemini_api_key || '';
+  if (agentConfig.gemini_voice) $('gemini-voice').value = agentConfig.gemini_voice;
   // Initialize provider management UI
   handleProviderChange(provider);
 }
@@ -472,43 +461,38 @@ async function initChat() {
     const data = await res.json();
     $('messages').innerHTML = '';
     if (data.history.length === 0) {
-      const welcomeContent = "Hello! I'm Picolo, your AI assistant. I can help with office documents, web pages, file operations, and more. How can I assist you today?";
-      const welcome = document.createElement('div');
-      welcome.className = 'message assistant welcome';
+  const welcomeContent = "Hello! I'm Picolo, your AI assistant. I can help with office documents, web pages, file operations, and more. How can I assist you today?";
+  const welcome = document.createElement('div');
+  welcome.className = 'message assistant welcome';
 
-      // Header with timestamp and copy
-      const header = document.createElement('div');
-      header.style.display = 'flex';
-      header.style.justifyContent = 'space-between';
-      header.style.alignItems = 'center';
-      header.style.marginBottom = '4px';
+  // Header with timestamp and copy
+  const header = document.createElement('div');
+  header.className = 'message-header';
 
-      // Timestamp (left side)
-      const left = document.createElement('span');
-      left.style.fontSize = '0.8rem';
-      left.style.color = 'var(--text-light)';
-      left.style.opacity = '0.8';
-      left.textContent = formatTimestamp(getCurrentTimestamp());
-      header.appendChild(left);
+  // Timestamp (left side)
+  const left = document.createElement('span');
+  left.className = 'message-meta';
+  left.textContent = formatTimestamp(getCurrentTimestamp());
+  header.appendChild(left);
 
-      // Copy button right
-      const copyBtn = document.createElement('button');
-      copyBtn.className = 'copy-btn';
-      copyBtn.title = 'Copy';
-      copyBtn.innerHTML = '📋';
-      copyBtn.onclick = () => copyText(welcomeContent, copyBtn);
-      header.appendChild(copyBtn);
+  // Copy button right
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.title = 'Copy';
+  copyBtn.innerHTML = '📋';
+  copyBtn.onclick = () => copyText(welcomeContent, copyBtn);
+  header.appendChild(copyBtn);
 
-      welcome.appendChild(header);
+  welcome.appendChild(header);
 
-      // Content
-      const contentDiv = document.createElement('div');
-      contentDiv.className = 'message-content';
-      contentDiv.textContent = welcomeContent;
-      welcome.appendChild(contentDiv);
+  // Content
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content';
+  contentDiv.textContent = welcomeContent;
+  welcome.appendChild(contentDiv);
 
-      $('messages').appendChild(welcome);
-    } else {
+  $('messages').appendChild(welcome);
+} else {
       data.history.forEach(renderMessage);
     }
     scrollToBottom();
@@ -528,6 +512,56 @@ async function sendMessage() {
     input.value = '';
     autoResize(input);
     $('clear-chat-btn').click();
+    return;
+  }
+
+  // Check if voice chat is active
+  if (voiceActive && voiceChat) {
+    // Voice chat is active → route text to Gemini Live
+    voiceChat.sendText(content);
+    
+    // Render user message immediately
+    const container = $('messages');
+    const prevChatCount = Array.from(container.children).filter(el => {
+      const cls = el.className || '';
+      return (cls.includes('user') || cls.includes('assistant')) && !cls.includes('welcome');
+    }).length;
+    const messageNumber = prevChatCount + 1;
+    const timestamp = getCurrentTimestamp();
+    const timeStr = formatTimestamp(timestamp);
+
+    const userDiv = document.createElement('div');
+    userDiv.className = 'message user';
+
+    const header = document.createElement('div');
+    header.className = 'message-header';
+
+    const left = document.createElement('span');
+    left.className = 'message-meta';
+    left.textContent = `#${messageNumber} ${timeStr}`;
+    header.appendChild(left);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-btn';
+    copyBtn.title = 'Copy';
+    copyBtn.innerHTML = '📋';
+    copyBtn.onclick = () => copyText(content, copyBtn);
+    header.appendChild(copyBtn);
+
+    userDiv.appendChild(header);
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.textContent = content;
+    userDiv.appendChild(contentDiv);
+
+    container.appendChild(userDiv);
+    scrollToBottom();
+    
+    // Clear input
+    input.value = '';
+    autoResize(input);
+    sendBtn.disabled = false;
     return;
   }
 
@@ -554,39 +588,34 @@ async function sendMessage() {
     const timeStr = formatTimestamp(timestamp);
 
     const userDiv = document.createElement('div');
-    userDiv.className = 'message user';
+userDiv.className = 'message user';
 
-    const header = document.createElement('div');
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-    header.style.marginBottom = '4px';
+const header = document.createElement('div');
+header.className = 'message-header';
 
-    const left = document.createElement('span');
-    left.style.fontSize = '0.8rem';
-    left.style.color = 'var(--text-light)';
-    left.style.opacity = '0.8';
-    left.textContent = `#${messageNumber} ${timeStr}`;
-    header.appendChild(left);
+const left = document.createElement('span');
+left.className = 'message-meta';
+left.textContent = `#${messageNumber} ${timeStr}`;
+header.appendChild(left);
 
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 'copy-btn';
-    copyBtn.title = 'Copy';
-    copyBtn.innerHTML = '📋';
-    copyBtn.onclick = () => copyText(content, copyBtn);
-    header.appendChild(copyBtn);
+const copyBtn = document.createElement('button');
+copyBtn.className = 'copy-btn';
+copyBtn.title = 'Copy';
+copyBtn.innerHTML = '📋';
+copyBtn.onclick = () => copyText(content, copyBtn);
+header.appendChild(copyBtn);
 
-    userDiv.appendChild(header);
+userDiv.appendChild(header);
 
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'message-content';
-    contentDiv.textContent = content;
-    userDiv.appendChild(contentDiv);
+const contentDiv = document.createElement('div');
+contentDiv.className = 'message-content';
+contentDiv.textContent = content;
+userDiv.appendChild(contentDiv);
 
-    container.appendChild(userDiv);
-    scrollToBottom();
+container.appendChild(userDiv);
+scrollToBottom();
 
-    // ── SSE streaming via /api/chat/stream ──────────────────────────────
+// ── SSE streaming via /api/chat/stream ──────────────────────────────
     const res = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -606,56 +635,57 @@ async function sendMessage() {
     let currentEventType = '';
 
     // ── Live assistant bubble (created on first 'thinking', updated in-place) ──
-    // We build the bubble DOM once and mutate its contentDiv so the user sees
-    // content appear without the bubble jumping around.
-    let liveBubble = null;      // the outer .message.assistant div
-    let liveContent = null;     // the .message-content div inside it
-    let liveToolList = null;    // the ⚙️ tool indicator div inside it
-    let liveReason=null;
-    let liveCopyBtn = null;     // the copy button (wired up after typewriter)
+// We build the bubble DOM once and mutate its contentDiv so the user sees
+// content appear without the bubble jumping around.
+let liveBubble = null; // the outer .message.assistant div
+let liveContent = null; // the .message-content div inside it
+let liveToolList = null; // the ⚙️ tool indicator div inside it
+let liveReason=null;
+let liveCopyBtn = null; // the copy button (wired up after typewriter)
 
-    function ensureLiveBubble() {
-      if (liveBubble) return;
-      // Count existing chat messages to get the right message number
-      const prevChatCount = Array.from(container.children).filter(el => {
-        const cls = el.className || '';
-        return (cls.includes('user') || cls.includes('assistant')) && !cls.includes('welcome');
-      }).length;
-      const messageNumber = prevChatCount + 1;
-      const timeStr = (new Date().toLocaleString().slice(0, 21));
+function ensureLiveBubble() {
+  if (liveBubble) return;
 
-      liveBubble = document.createElement('div');
-      liveBubble.className = 'message assistant';
+  // Count existing chat messages to get the right message number
+  const prevChatCount = Array.from(container.children).filter(el => {
+    const cls = el.className || '';
+    return (cls.includes('user') || cls.includes('assistant')) && !cls.includes('welcome');
+  }).length;
+  const messageNumber = prevChatCount + 1;
+  const timeStr = (new Date().toLocaleString().slice(0, 21));
 
-      const header = document.createElement('div');
-      header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
+  liveBubble = document.createElement('div');
+  liveBubble.className = 'message assistant';
 
-      const left = document.createElement('span');
-      left.style.cssText = 'font-size:0.8rem;color:var(--text-light);opacity:0.8;';
-      left.textContent = `#${messageNumber} ${timeStr}`;
-      header.appendChild(left);
+  const header = document.createElement('div');
+  header.className = 'message-header';
 
-      liveCopyBtn = document.createElement('button');
-      liveCopyBtn.className = 'copy-btn';
-      liveCopyBtn.title = 'Copy';
-      liveCopyBtn.innerHTML = '📋';
-      header.appendChild(liveCopyBtn);
+  const left = document.createElement('span');
+  left.className = 'message-meta';
+  left.textContent = `#${messageNumber} ${timeStr}`;
+  header.appendChild(left);
 
-      liveBubble.appendChild(header);
+  liveCopyBtn = document.createElement('button');
+  liveCopyBtn.className = 'copy-btn';
+  liveCopyBtn.title = 'Copy';
+  liveCopyBtn.innerHTML = '📋';
+  header.appendChild(liveCopyBtn);
 
-      liveContent = document.createElement('div');
-      liveContent.className = 'message-content';
-      liveContent.textContent = '…';
-      liveBubble.appendChild(liveContent);
+  liveBubble.appendChild(header);
 
-      liveReason=document.createElement('div');
-      liveReason.className='message-content';
-      liveReason.textContent='...';
-      liveBubble.appendChild(liveReason);
+  liveContent = document.createElement('div');
+  liveContent.className = 'message-content';
+  liveContent.textContent = '…';
+  liveBubble.appendChild(liveContent);
 
-      container.appendChild(liveBubble);
-      scrollToBottom();
-    }
+  liveReason=document.createElement('div');
+  liveReason.className='message-content';
+  liveReason.textContent='...';
+  liveBubble.appendChild(liveReason);
+
+  container.appendChild(liveBubble);
+  scrollToBottom();
+}
 
     // Typewriter: writes `text` into `el` at ~30 chars/tick, resolves when done.
     function typewrite(el, text) {
@@ -710,19 +740,16 @@ async function sendMessage() {
             scrollToBottom();
             
           } else if (currentEventType === 'tool_call') {
-            // Show the tool being called inside the live bubble
-            ensureLiveBubble();
-          
-            if (!liveToolList) {
-              liveToolList = document.createElement('div');
-              liveToolList.className = 'message tool-call';
-              liveToolList.style.cssText = 'font-size:0.85rem;margin-top:4px;opacity:0.9;';
-              liveContent.after(liveToolList);
-            }
-            liveToolList.innerHTML += `<p>${counter}. ⚡ ${event.tool} @ ${now} : ${event.args.substring(10,77)} ...</p>`;
-            scrollToBottom();
-
-          } else if (currentEventType === 'tool_result') {
+  // Show the tool being called inside the live bubble
+  ensureLiveBubble();
+  if (!liveToolList) {
+    liveToolList = document.createElement('div');
+    liveToolList.className = 'message tool-call tool-call-text';
+    liveContent.after(liveToolList);
+  }
+  liveToolList.innerHTML += `<p>${counter}. ⚡ ${event.tool} @ ${now} : ${event.args.substring(10,77)} ...</p>`;
+  scrollToBottom();
+} else if (currentEventType === 'tool_result') {
             // Render the collapsed tool result bubble immediately, then reset liveContent
             ensureLiveBubble();
             liveToolList.innerHTML += `<p>${counter}. 💾 ${event.tool} finished @ ${now} : ... ${event.result.slice(-77)}</p>`;
@@ -862,6 +889,9 @@ function setupEventListeners() {
   // Cancel button
   $('status-cancel').addEventListener('click', cancelRequest);
 
+  // ── Voice chat button ────────────────────────────────────────────────────
+  $('voice-btn').addEventListener('click', toggleVoiceChat);
+
   // Provider change → update model options and management sections
   $('provider').addEventListener('change', () => {
     const providerId = $('provider').value;
@@ -955,6 +985,8 @@ function setupEventListeners() {
       telegram_allowed_users: $('telegram-allowed-users').value.split(',').map(s => s.trim()).filter(Boolean),
       discord_token: $('discord-token').value.trim(),
       discord_allowed_users: $('discord-allowed-users').value.split(',').map(s => s.trim()).filter(Boolean),
+      gemini_api_key: $('gemini-api-key').value.trim(),
+      gemini_voice: $('gemini-voice').value,
       providers: PROVIDERS // persist provider catalog
     };
     const statusEl = $('config-status');
@@ -989,3 +1021,192 @@ document.addEventListener('DOMContentLoaded', () => {
   ensureSession().then(() => initChat());
   setupEventListeners();
 });
+
+// ── Voice Chat ──────────────────────────────────────────────────────────────
+
+let voiceChat = null;
+let voiceActive = false;
+// Accumulate streaming agent transcript into a live bubble
+let _agentVoiceBubble = null;
+let _agentVoiceBuffer = "";
+
+function getSystemPrompt() {
+  // Grab the current system prompt from the config form (if open), else from loaded config
+  const el = $('system-prompt');
+  return (el && el.value) ? el.value : (agentConfig.system_prompt || '');
+}
+
+function setVoiceBtnState(active) {
+  const btn = $('voice-btn');
+  const bar = $('voice-status-bar');
+  if (active) {
+    btn.innerHTML = '<span>Voice</span>⏹️';
+    btn.title = 'Stop voice chat';
+    bar.style.display = 'flex';
+    scrollToBottom();
+  } else {
+    btn.innerHTML = '<span>Voice</span>🎤';
+    btn.title = 'Start voice chat';
+    bar.style.display = 'none';
+  }
+}
+
+function setVoiceStatus(text) {
+  const el = $('voice-status-text');
+  if (el) el.textContent = text;
+}
+
+
+
+function updateVoiceUserBubble(text) {
+  const container = $('messages');
+  const div = document.createElement('div');
+  div.className = 'message user voice-message';
+
+  const header = document.createElement('div');
+  header.className = 'voice-bubble-header';
+
+  const label = document.createElement('span');
+  label.className = 'voice-label';
+  label.textContent = '🎤 ' + getCurrentTimestamp();
+  header.appendChild(label);
+
+  div.appendChild(header);
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content voice-content';
+  contentDiv.textContent = text;
+  div.appendChild(contentDiv);
+
+  container.appendChild(div);
+  scrollToBottom();
+}
+
+/**
+ * Agent voice transcript — receives the full accumulated text on each chunk.
+ * Sets bubble text directly (don't accumulate again here).
+ * Called with null to finalize/reset the bubble.
+ */
+function appendVoiceAgentChunk(text) {
+  if (text === null) {
+    // Turn complete — reset bubble reference so next turn gets a fresh one
+    _agentVoiceBubble = null;
+    _agentVoiceBuffer = "";
+    return;
+  }
+
+  if (!_agentVoiceBubble) {
+  // Create the bubble shell
+  const container = $('messages');
+  const div = document.createElement('div');
+  div.className = 'message assistant voice-message';
+
+  const header = document.createElement('div');
+  header.className = 'voice-bubble-header';
+
+  const label = document.createElement('span');
+  label.className = 'voice-label';
+  label.textContent = '🔊 ' + getCurrentTimestamp();
+  header.appendChild(label);
+
+  div.appendChild(header);
+
+  const contentDiv = document.createElement('div');
+  contentDiv.className = 'message-content voice-content';
+  div.appendChild(contentDiv);
+
+  container.appendChild(div);
+  _agentVoiceBubble = contentDiv;
+  scrollToBottom();
+}
+
+  // voicechat.js sends the FULL accumulated text each time — set, don't append
+  _agentVoiceBubble.textContent = text;
+  scrollToBottom();
+}
+
+async function toggleVoiceChat() {
+  if (voiceActive) {
+    // Stop
+    voiceActive = false;
+    setVoiceBtnState(false);
+    setVoiceStatus('Stopping…');
+    if (voiceChat) {
+      voiceChat.stop();
+      voiceChat = null;
+    }
+    // Flush any open bubbles
+    appendVoiceAgentChunk(null);
+    _userVoiceBubble = null;
+    return;
+  }
+
+  // Start
+  voiceActive = true;
+  setVoiceBtnState(true);
+  setVoiceStatus('Starting…');
+
+  voiceChat = new PicoloVoiceChat({
+    voiceName: ($('gemini-voice') && $('gemini-voice').value) || agentConfig.gemini_voice || 'Puck',
+    sessionId: sessionId || 'default',
+
+    onStatusChange: (status) => {
+      setVoiceStatus(status);
+    },
+
+    onError: (msg) => {
+      console.error('[VoiceChat]', msg);
+      setVoiceStatus(`Error: ${msg}`);
+      renderMessage({ role: 'system', content: `🎤 Voice error: ${msg}`, timestamp: getCurrentTimestamp() });
+      voiceActive = false;
+      setVoiceBtnState(false);
+      voiceChat = null;
+    },
+
+    onUserTranscript: (text) => {
+      updateVoiceUserBubble(text);
+    },
+
+    onAgentTranscript: (text) => {
+      appendVoiceAgentChunk(text);
+    },
+
+    onAgentAudioStart: () => {
+      setVoiceStatus('Agent speaking…');
+    },
+
+    onAgentAudioEnd: () => {
+      appendVoiceAgentChunk(null);
+      setVoiceStatus('Listening…');
+    },
+
+    onToolCall: (data) => {
+      // Render tool call in chat window
+      const now = getCurrentTimestamp();
+      renderMessage({
+        role: 'assistant',
+        content: '', // No text content for tool calls
+        timestamp: now,
+        tool_calls: [{
+          function: {
+            name: data.tool,
+            arguments: data.args
+          }
+        }]
+      });
+    },
+
+    onToolResult: (data) => {
+      // Render tool result in chat window
+      const now = getCurrentTimestamp();
+      renderMessage({
+        role: 'tool',
+        name: data.tool,
+        content: data.result,
+        timestamp: now
+      });
+    },
+  });
+
+  voiceChat.start();
+}
